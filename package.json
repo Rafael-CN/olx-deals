@@ -45,11 +45,13 @@
   "keywords": [
     "mcp",
     "olx",
+    "olx-brasil",
     "scraper",
     "claude",
     "model-context-protocol",
     "web-scraping",
     "marketplace",
+    "brazil",
     "europe",
     "portugal",
     "poland"
@@ -59,7 +61,7 @@
   },
   "author": "Łukasz Margiela",
   "license": "MIT",
-  "description": "OLX MCP server that enables Claude Desktop to browse and search OLX listings across multiple domains (PT, PL, BG, RO, UA)",
+  "description": "OLX MCP server that enables Claude Desktop to browse and search OLX listings across multiple domains (BR, PT, PL, BG, RO, UA)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/l-margiela/olx-mcp.git"

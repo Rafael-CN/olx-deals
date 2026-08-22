@@ -35,7 +35,7 @@ async function testMultiDomainSupport() {
     console.log('✅ Tools created successfully\n');
 
     // Test different domains
-    const domains = ['olx.pt', 'olx.pl'];
+    const domains = ['olx.com.br', 'olx.pt', 'olx.pl'];
 
     for (const domain of domains) {
       console.log(`🌍 Testing domain: ${domain}`);
@@ -45,7 +45,8 @@ async function testMultiDomainSupport() {
         console.log(`  🔍 Testing search on ${domain}...`);
         const searchResult = await searchTool.execute({
           domain,
-          query: domain === 'olx.pl' ? 'telefon' : 'telemóvel',
+          // Same intent in each locale: "mobile phone".
+          query: { 'olx.pl': 'telefon', 'olx.com.br': 'celular' }[domain] ?? 'telemóvel',
           limit: 5,
         });
 

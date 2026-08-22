@@ -23,7 +23,7 @@ if (process.argv.includes('--version') || process.argv.includes('-v')) {
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(`
 OLX MCP Server v${version}
-A Model Context Protocol server for searching OLX listings across Europe.
+A Model Context Protocol server for searching OLX listings in Brazil and across Europe.
 
 Usage: olx-mcp
 
@@ -38,7 +38,7 @@ Configure it in your claude_desktop_config.json:
   }
 }
 
-Supports domains: olx.pt, olx.pl, olx.bg, olx.ro, olx.ua
+Supports domains: olx.com.br, olx.pt, olx.pl, olx.bg, olx.ro, olx.ua
   `);
   process.exit(0);
 }

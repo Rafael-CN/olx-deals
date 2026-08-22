@@ -1,8 +1,17 @@
 import { z } from 'zod';
 
+export const OlxDomainSchema = z.enum([
+  'olx.pt',
+  'olx.pl',
+  'olx.bg',
+  'olx.ro',
+  'olx.ua',
+  'olx.com.br',
+]);
+
 export const SearchListingsArgsSchema = z
   .object({
-    domain: z.enum(['olx.pt', 'olx.pl', 'olx.bg', 'olx.ro', 'olx.ua']),
+    domain: OlxDomainSchema,
     query: z.string().min(1).max(100).optional(),
     category: z.string().optional(),
     location: z.string().optional(),
@@ -24,7 +33,7 @@ export const SearchListingsArgsSchema = z
 export type SearchListingsArgs = z.infer<typeof SearchListingsArgsSchema>;
 
 export const GetListingDetailsArgsSchema = z.object({
-  domain: z.enum(['olx.pt', 'olx.pl', 'olx.bg', 'olx.ro', 'olx.ua']),
+  domain: OlxDomainSchema,
   // Rejects path and selector metacharacters (quotes, slashes, whitespace, ?, #)
   // that have no place in an OLX id. The id is also encoded before it reaches a
   // URL and passed as data to DOM queries; this is the outer guard.
@@ -65,9 +74,11 @@ export const ListingSchema = z.object({
   location: z.string().optional(),
   category: z.string().optional(),
   imageUrl: z.string().url().optional(),
+  imageUrls: z.array(z.string().url()).optional(),
   url: z.string().url(),
   publishedAt: z.date().optional(),
   description: z.string().optional(),
+  attributes: z.record(z.string()).optional(),
   seller: z
     .object({
       name: z.string().optional(),

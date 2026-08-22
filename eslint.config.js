@@ -24,6 +24,12 @@ export default [
         URL: 'readonly',
         URLSearchParams: 'readonly',
         AbortSignal: 'readonly',
+        // Valid inside page.evaluate / $$eval callbacks, which run in the page.
+        document: 'readonly',
+        window: 'readonly',
+        Element: 'readonly',
+        HTMLElement: 'readonly',
+        Node: 'readonly',
       },
     },
     plugins: {

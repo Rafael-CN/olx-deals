@@ -10,6 +10,7 @@ import {
   ListingId,
   OlxDomain,
   DomainConfig,
+  DetailSelectors,
 } from '../../core/types.js';
 import { getDomainConfig } from './domain-config.js';
 
@@ -37,6 +38,11 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     this.domainConfig = domainConfig;
   }
 
+  /** See DomainConfig.waitUntil — 'networkidle' unless the domain says otherwise. */
+  protected get waitUntil(): NonNullable<DomainConfig['waitUntil']> {
+    return this.domainConfig.waitUntil ?? 'networkidle';
+  }
+
   validateQuery(query: unknown): query is SearchFilters {
     return typeof query === 'object' && query !== null;
   }
@@ -54,7 +60,7 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     return await this.withPage(async page => {
       const searchUrl = this.buildSearchUrl(filters);
 
-      await page.goto(searchUrl, { waitUntil: 'networkidle' });
+      await page.goto(searchUrl, { waitUntil: this.waitUntil });
       await this.waitForSearchResults(page);
 
       if (signal?.aborted) {
@@ -90,12 +96,20 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
   }
 
   protected buildSearchUrl(filters: SearchFilters): string {
-    const path = this.domainConfig.urlPatterns.searchPath(filters.location, filters.query);
+    const patterns = this.domainConfig.urlPatterns;
+    const path = patterns.searchPath(filters.location, filters.query, filters.category);
     const url = new URL(path, this.domainConfig.baseUrl);
 
-    // Handle category as URL parameter
-    if (filters.category) {
-      url.searchParams.set(this.domainConfig.urlPatterns.categoryParam, filters.category);
+    // Domains that take the search term as a parameter rather than as a path
+    // slug; searchPath has already ignored the query on those.
+    if (patterns.queryParam && filters.query) {
+      url.searchParams.set(patterns.queryParam, filters.query);
+    }
+
+    // Only for domains that address categories through the query string —
+    // elsewhere searchPath has already placed the category in the path.
+    if (filters.category && patterns.categoryParam) {
+      url.searchParams.set(patterns.categoryParam, filters.category);
     }
 
     // Handle price filters
@@ -113,17 +127,18 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       );
     }
 
-    // Handle sorting
+    // Handle sorting. The parameter name travels with the value because
+    // olx.com.br uses a different one per order.
     if (filters.sortBy && filters.sortBy !== 'relevance') {
-      const sortValue = this.domainConfig.urlPatterns.sortParams[filters.sortBy];
-      if (sortValue) {
-        url.searchParams.set('search[order]', sortValue);
+      const sort = patterns.sortParams[filters.sortBy];
+      if (sort) {
+        url.searchParams.set(sort.param, sort.value);
       }
     }
 
     // Handle pagination
     if (filters.page && filters.page > 1) {
-      url.searchParams.set(this.domainConfig.urlPatterns.pageParam, filters.page.toString());
+      url.searchParams.set(patterns.pageParam, filters.page.toString());
     }
 
     return url.toString();
@@ -150,8 +165,13 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       listingCard,
       (elements, selectors) =>
         elements.map(card => {
+          // Card text is laid out for the eye, so it arrives with the runs of
+          // whitespace and stray newlines that the layout needs ("Americana -
+          //  SP"); collapse them so callers get one clean line.
+          const clean = (text: string) => text.replace(/\s+/g, ' ').trim();
+
           const readText = (selector: string) =>
-            card.querySelector(selector)?.textContent?.trim() || '';
+            clean(card.querySelector(selector)?.textContent || '');
 
           const priceElement = card.querySelector(selectors.price);
           const readPrice = () => {
@@ -166,18 +186,19 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
               .map(node => node.textContent || '')
               .join('')
               .trim();
-            if (ownText) return ownText;
+            if (ownText) return clean(ownText);
 
             // No direct text node means the markup changed shape; fall back to
             // everything except the injected stylesheets.
-            return Array.from(priceElement.childNodes)
-              .filter(node => {
-                const tag = node.nodeName.toLowerCase();
-                return tag !== 'style' && tag !== 'script';
-              })
-              .map(node => node.textContent || '')
-              .join('')
-              .trim();
+            return clean(
+              Array.from(priceElement.childNodes)
+                .filter(node => {
+                  const tag = node.nodeName.toLowerCase();
+                  return tag !== 'style' && tag !== 'script';
+                })
+                .map(node => node.textContent || '')
+                .join('')
+            );
           };
 
           const imageElement = card.querySelector(selectors.image);
@@ -245,7 +266,7 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     this.urlCache.set(id, url);
   }
 
-  private async extractPaginationInfo(page: Page, currentPage: number, cardCount: number) {
+  protected async extractPaginationInfo(page: Page, currentPage: number, cardCount: number) {
     const totalCount = await page
       .$eval(this.domainConfig.selectors.search.totalCount, el => {
         const text = el.textContent || '';
@@ -320,31 +341,58 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       }
 
       // Navigate to the listing page
-      await page.goto(finalUrl, { waitUntil: 'networkidle' });
+      await page.goto(finalUrl, { waitUntil: this.waitUntil });
 
       if (signal?.aborted) {
         throw new Error('Operation cancelled');
       }
 
-      const detail = this.domainConfig.selectors.detail;
-      const [title, price, description, location, seller] = await Promise.all([
-        readText(page, detail.title),
-        readOptionalText(page, detail.price),
-        readOptionalText(page, detail.description),
-        readOptionalText(page, detail.location),
-        this.extractSellerInfo(page),
-      ]);
-
-      return {
-        id: listingId,
-        title,
-        price,
-        location,
-        description,
-        url: finalUrl,
-        seller,
-      };
+      return await this.extractListingDetail(page, listingId, finalUrl);
     }, signal);
+  }
+
+  /**
+   * Reads an already-loaded listing page. Domains whose detail markup carries no
+   * stable selectors override this — see OLXBRScraper.
+   */
+  protected async extractListingDetail(
+    page: Page,
+    listingId: ListingId,
+    url: string
+  ): Promise<Listing> {
+    const detail = this.requireDetailSelectors();
+    const [title, price, description, location, seller] = await Promise.all([
+      readText(page, detail.title),
+      readOptionalText(page, detail.price),
+      readOptionalText(page, detail.description),
+      readOptionalText(page, detail.location),
+      this.extractSellerInfo(page, detail),
+    ]);
+
+    return {
+      id: listingId,
+      title,
+      price,
+      location,
+      description,
+      url,
+      seller,
+    };
+  }
+
+  /**
+   * A domain without detail selectors is expected to override
+   * extractListingDetail; reaching here means it did not.
+   */
+  private requireDetailSelectors(): DetailSelectors {
+    const detail = this.domainConfig.selectors.detail;
+    if (!detail) {
+      throw new NonRetryableError(
+        `${this.domainConfig.domain} declares no detail selectors and its scraper does not ` +
+          `override extractListingDetail — listing details cannot be read.`
+      );
+    }
+    return detail;
   }
 
   /**
@@ -360,7 +408,7 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
 
     try {
       await page.goto(`${this.domainConfig.baseUrl}${listingPath}q-${safeId}/`, {
-        waitUntil: 'networkidle',
+        waitUntil: this.waitUntil,
         timeout: 15000,
       });
 
@@ -383,8 +431,8 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     return '';
   }
 
-  private async extractSellerInfo(page: Page) {
-    const seller = this.domainConfig.selectors.detail.seller;
+  private async extractSellerInfo(page: Page, detail: DetailSelectors) {
+    const seller = detail.seller;
     const [name, verified] = await Promise.all([
       readOptionalText(page, seller.name),
       page.$(seller.verified).then(element => element !== null),
@@ -397,9 +445,9 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
 }
 
 /** Text of the first match, or '' when the selector matches nothing. */
-const readText = (page: Page, selector: string): Promise<string> =>
+export const readText = (page: Page, selector: string): Promise<string> =>
   page.$eval(selector, el => el.textContent?.trim() || '').catch(() => '');
 
 /** As readText, but absent fields collapse to undefined rather than ''. */
-const readOptionalText = async (page: Page, selector: string): Promise<string | undefined> =>
+export const readOptionalText = async (page: Page, selector: string): Promise<string | undefined> =>
   (await readText(page, selector)) || undefined;

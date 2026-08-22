@@ -9,7 +9,12 @@ import { OlxScraperFactory } from '../../scrapers/olx/scraper.factory.js';
 export class SearchListingsTool extends BaseTool<SearchListingsArgs, SearchResult> {
   readonly name = 'searchListings';
   readonly description =
-    'Search for listings on OLX domains (olx.pt, olx.pl, olx.bg, olx.ro, olx.ua) with various filters including query, category, location, and price range';
+    'Search for listings on OLX domains (olx.pt, olx.pl, olx.bg, olx.ro, olx.ua, olx.com.br) ' +
+    'with filters for query, category, location and price range. On olx.com.br, category and ' +
+    'location are site slugs: category is a path such as "celulares" or ' +
+    '"autos-e-pecas/carros-vans-e-utilitarios", and location is a state ("SP" or "estado-sp"), ' +
+    'a region ("sao-paulo-e-regiao") or both ("estado-sp/sao-paulo-e-regiao"). Brazilian ' +
+    'results stop at page 100 (5.000 ads), so narrow the filters rather than paging further.';
   readonly inputSchema = SearchListingsArgsSchema;
 
   constructor(private readonly scraperFactory: OlxScraperFactory) {
