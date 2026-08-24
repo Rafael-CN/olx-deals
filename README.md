@@ -155,6 +155,29 @@ Brazilian search caps out at 5.000 results. Requesting `page: 101` does not erro
 it serves page 100 again — so the server refuses it outright rather than handing back duplicate
 listings that look new. Narrow the search with a category, a location or a price range instead.
 
+### `sortBy` changes *which* ads come back, not just their order
+
+This is the surprising one, and it is the site's behaviour, not the scraper's. Applying any sort
+makes OLX answer with a different result set:
+
+| query (in `estado-rs`) | `relevance` | any sort (`sf=1`, `sp=1`, `sp=5`) |
+| --- | --- | --- |
+| `s22 ultra` | 71 results | 7 results |
+| `galaxy s22 ultra 256gb` | 13 results | 7 results |
+| `s22` | 21 results | 21 results |
+| `ultra` | 352 results | **584 results** |
+
+So a sort can narrow the set *or* widen it. The unsorted view appears to be a ranked, fuzzy match —
+of those 71 `s22 ultra` hits, only 7 were actually S22 Ultras; the rest were S22, S22+, S21 Ultra,
+S23 Ultra and accessories. The sorted view looks like it resolves the query to a product model and
+returns only ads tagged with it, which would explain why three extra query words still yield the
+same 7. That last part is inference, not something the site states.
+
+What it means in practice: `totalCount` moves when you change `sortBy`, and asking for
+`price-asc` to find the cheapest ad searches a *different corpus* than the default view — so it can
+miss an ad the fuzzy match would have caught (a typo'd title, say). When you need the same ads a
+person browsing the site sees, search with `relevance` and compare the prices yourself.
+
 ### Listing details come from structured data
 
 Brazilian listing pages carry build-hashed class names, so there is nothing durable to select on.

@@ -14,7 +14,10 @@ export class SearchListingsTool extends BaseTool<SearchListingsArgs, SearchResul
     'location are site slugs: category is a path such as "celulares" or ' +
     '"autos-e-pecas/carros-vans-e-utilitarios", and location is a state ("SP" or "estado-sp"), ' +
     'a region ("sao-paulo-e-regiao") or both ("estado-sp/sao-paulo-e-regiao"). Brazilian ' +
-    'results stop at page 100 (5.000 ads), so narrow the filters rather than paging further.';
+    'results stop at page 100 (5.000 ads), so narrow the filters rather than paging further. ' +
+    'Also on olx.com.br, sortBy is not a pure reordering: the site returns a different set of ' +
+    'ads once any sort is applied, so totalCount changes with sortBy. To see the same ads a ' +
+    'person browsing the site sees, search with sortBy "relevance" and compare prices yourself.';
   readonly inputSchema = SearchListingsArgsSchema;
 
   constructor(private readonly scraperFactory: OlxScraperFactory) {
