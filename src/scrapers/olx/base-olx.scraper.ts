@@ -1,4 +1,4 @@
-import { Browser, Page } from 'playwright';
+import { Browser, Page, Response } from 'playwright';
 import { NonRetryableError, PlaywrightScraper } from '../base/scraper.interface.js';
 import {
   SearchFilters,
@@ -60,7 +60,8 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     return await this.withPage(async page => {
       const searchUrl = this.buildSearchUrl(filters);
 
-      await page.goto(searchUrl, { waitUntil: this.waitUntil });
+      const response = await page.goto(searchUrl, { waitUntil: this.waitUntil });
+      this.assertServedByOlx(response, searchUrl);
       await this.waitForSearchResults(page);
 
       if (signal?.aborted) {
@@ -142,6 +143,28 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     }
 
     return url.toString();
+  }
+
+  /**
+   * A page OLX refused to serve still parses — it just has no listing cards on
+   * it — so without this a bot block or a rate limit is reported as "no results
+   * found", which is the one answer a caller cannot tell apart from the truth.
+   *
+   * 403 and 429 are not worth retrying: the backoff here is seconds, while a
+   * block lasts minutes, and retrying only adds to the traffic that caused it.
+   */
+  protected assertServedByOlx(response: Response | null, url: string): void {
+    const status = response?.status();
+    if (status === undefined || (status >= 200 && status < 400)) return;
+
+    const message =
+      `${this.domainConfig.domain} answered ${status} for ${url} — ` +
+      (status === 403 || status === 429
+        ? 'the request was blocked or rate-limited, not answered with an empty result set. ' +
+          'Wait before searching again.'
+        : 'the page was not served.');
+
+    throw status === 403 || status === 429 ? new NonRetryableError(message) : new Error(message);
   }
 
   private async waitForSearchResults(page: Page): Promise<void> {
@@ -341,7 +364,8 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       }
 
       // Navigate to the listing page
-      await page.goto(finalUrl, { waitUntil: this.waitUntil });
+      const response = await page.goto(finalUrl, { waitUntil: this.waitUntil });
+      this.assertServedByOlx(response, finalUrl);
 
       if (signal?.aborted) {
         throw new Error('Operation cancelled');

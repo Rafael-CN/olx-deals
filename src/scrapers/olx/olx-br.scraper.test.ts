@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { Browser, Page } from 'playwright';
+import type { Browser, Page, Response } from 'playwright';
 
 import { OLXBRScraper } from './olx-br.scraper.js';
 import { getDomainConfig } from './domain-config.js';
@@ -8,6 +8,7 @@ import {
   resetPlaywrightMocks,
 } from '../../../tests/mocks/playwright.mock.js';
 import type { ListingId, SearchFilters } from '../../core/types.js';
+import { NonRetryableError } from '../base/scraper.interface.js';
 
 /**
  * Exposes the protected URL and parsing hooks. Everything asserted here is
@@ -21,6 +22,12 @@ class TestableOLXBRScraper extends OLXBRScraper {
 
   idFrom(url: string): ListingId {
     return this.extractListingId(url);
+  }
+
+  assertServed(status: number | undefined) {
+    const response =
+      status === undefined ? null : ({ status: () => status } as unknown as Response);
+    this.assertServedByOlx(response, 'https://www.olx.com.br/brasil?q=x');
   }
 
   paginationFrom(header: string, currentPage: number, cardCount: number) {
@@ -155,6 +162,29 @@ describe('OLXBRScraper', () => {
     it('falls back to a derived id when the href carries none', () => {
       const id = scraper.idFrom('https://www.olx.com.br/promoted-slot');
       expect(id).toMatch(/^u[a-z0-9]+$/);
+    });
+  });
+
+  describe('refused pages', () => {
+    // A blocked page parses fine and simply has no cards on it, so without this
+    // guard a rate limit is indistinguishable from "nothing matched".
+    it('rejects a 403 instead of reporting an empty result set', () => {
+      expect(() => scraper.assertServed(403)).toThrow(/blocked or rate-limited/);
+    });
+
+    it('does not retry a block, which outlasts the backoff', () => {
+      expect(() => scraper.assertServed(429)).toThrow(NonRetryableError);
+    });
+
+    it('lets a server error be retried', () => {
+      expect(() => scraper.assertServed(503)).toThrow(/not served/);
+      expect(() => scraper.assertServed(503)).not.toThrow(NonRetryableError);
+    });
+
+    it('accepts a served page, and a navigation that reports no response', () => {
+      expect(() => scraper.assertServed(200)).not.toThrow();
+      expect(() => scraper.assertServed(301)).not.toThrow();
+      expect(() => scraper.assertServed(undefined)).not.toThrow();
     });
   });
 
