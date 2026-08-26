@@ -291,7 +291,12 @@ Rode `garimpo --help`. As que mais importam:
 | `--seller-*` | nota, vendas, taxa de cancelamento, idade da conta, verificado |
 | `--seller-unknown pass\|fail` | vendedor sem histórico |
 | `--max-cards` / `--max-details` / `--max-requests` / `--max-minutes` | orçamento |
+| `--gentle` | preset "não quero tomar bloqueio": ~2 rpm, 1 página por vez |
 | `--rpm` / `--max-rpm` / `--cooldown` | ritmo inicial; adapta sozinho |
+| `--pause-every` / `--pause-for` | gaps longos ociosos entre rajadas |
+| `--window 02:00-07:00` | só trabalha nessas horas (aceita virar meia-noite) |
+| `--refresh-after-days` | não relê página de anúncio mais nova que isso |
+| `--force` | começa mesmo com cooldown de bloqueio pendente |
 | `--min-discount` / `--min-z` / `--min-reference` | rigor do garimpo |
 | `--run <id>` | retomar |
 | `--json` | saída estruturada |
