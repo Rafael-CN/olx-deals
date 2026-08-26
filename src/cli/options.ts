@@ -28,6 +28,11 @@ export const CLI_OPTIONS = {
   'min-price': { type: 'string' },
   'max-price': { type: 'string' },
   require: { type: 'string', multiple: true },
+  queries: { type: 'string', multiple: true },
+  demote: { type: 'string', multiple: true },
+  'min-match': { type: 'string' },
+  sample: { type: 'string' },
+  'sample-by': { type: 'string' },
   reject: { type: 'string', multiple: true },
   tolerate: { type: 'string' },
   'max-cards': { type: 'string' },
@@ -243,10 +248,19 @@ export const buildProfile = (values: CliValues): Profile => {
         }
       : {};
 
+  const sampleBy = values['sample-by'] ? String(values['sample-by']) : undefined;
+  if (sampleBy && !['match', 'price', 'spread', 'random'].includes(sampleBy)) {
+    throw new Error(`--sample-by must be match, price, spread or random, got "${sampleBy}"`);
+  }
+
   return ProfileSchema.parse({
     ...base,
     name: values.name ? String(values.name) : base.name,
     query: values.query ? String(values.query) : base.query,
+    queries: list(values, 'queries') ?? base.queries,
+    demote: list(values, 'demote') ?? list(values, 'reject') ?? base.demote,
+    ...(num(values, 'min-match') === undefined ? {} : { minMatchScore: num(values, 'min-match') }),
+    ...(sampleBy ? { sampleBy } : {}),
     states: list(values, 'states') ?? base.states,
     categories: list(values, 'categories') ?? base.categories,
     ...(minPrice === undefined ? {} : { minPrice }),
@@ -269,6 +283,10 @@ export const buildProfile = (values: CliValues): Profile => {
     limits: {
       ...base.limits,
       ...(num(values, 'max-cards') === undefined ? {} : { maxCards: num(values, 'max-cards') }),
+      // --sample is the same knob as --max-details, named for what it means to a
+      // person: how many of the ranked candidates to actually go and read.
+      // --max-details wins when both are given.
+      ...(num(values, 'sample') === undefined ? {} : { maxDetails: num(values, 'sample') }),
       ...(num(values, 'max-details') === undefined
         ? {}
         : { maxDetails: num(values, 'max-details') }),

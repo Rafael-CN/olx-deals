@@ -14,10 +14,12 @@ import {
   collect,
   enrich,
   flushProbedPages,
+  makeGate,
   makeProbe,
   newBudget,
   ProbedPage,
   RunnerContext,
+  type Budget,
 } from '../collect/runner.js';
 import { Candidate, triage, Verdict } from '../triage/stages.js';
 import { requiredSellerFields } from '../triage/seller.js';
@@ -38,12 +40,19 @@ Commands
   enrich      read the ad pages of everything that passed card triage
   gems        rank survivors against the going rate for the product
   report      print a run's funnel, prices and top finds
+  candidates  browse the ranked candidate base (no requests, no site contact)
   runs        list stored runs
   template    print a fully populated profile JSON to edit
 
 Profile
   --profile <path>          JSON profile; every flag below overrides it
   --name, --query
+  --queries 'red magic 10 pro,nubia redmagic 10'
+                            extra phrasings swept into the same corpus
+  --demote 'capa,s23,air'   words that lower an ad's match score (never remove it)
+  --min-match 25            only consider candidates scoring at least this
+  --sample 250              how many candidates to actually read
+  --sample-by match|price|spread|random   which ones to pick
   --states sp,rj            UFs to sweep (default: all 27)
   --categories celulares    OLX category slug paths
   --min-price, --max-price
@@ -101,7 +110,8 @@ const runId = (profile: Profile, now: Date): string =>
 const openContext = async (
   profile: Profile,
   values: CliValues,
-  store: Store
+  store: Store,
+  budget: Budget
 ): Promise<RunnerContext> => {
   const session = await BrowserSession.open({
     dataDir: profile.dataDir,
@@ -116,12 +126,17 @@ const openContext = async (
 
   const meter = new RequestMeter();
   meter.watchContext(session.httpContext);
-  const fetcher = await HtmlFetcher.create(session.httpContext, session.parserContext);
+  const governor = withWindowLogging(new RateGovernor(profile.pacing), values);
+  const fetcher = await HtmlFetcher.create(
+    session.httpContext,
+    session.parserContext,
+    makeGate(governor, budget)
+  );
 
   return {
     scraper: new OLXBRScraper(session.playwrightBrowser),
     session,
-    governor: withWindowLogging(new RateGovernor(profile.pacing), values),
+    governor,
     fetcher,
     meter,
     blockMemory: new BlockMemory(profile.dataDir),
@@ -229,6 +244,7 @@ const report = (store: Store, id: string, top: number, asJson: boolean): void =>
           shards,
           prices,
           funnel,
+          matchBands: store.matchHistogram(id),
           rejections: { card: cardRejects, detail: detailRejects },
           gems: gems.map(gem => ({ ...gem, reasons: JSON.parse(String(gem['reasons_json'])) })),
         },
@@ -247,6 +263,16 @@ const report = (store: Store, id: string, top: number, asJson: boolean): void =>
       `(${prices['n']} priced)`
   );
   out(`  shards: ${shards.map(s => `${s.status}=${s.n}`).join(' ')}`);
+
+  const histogram = store.matchHistogram(id);
+  if (histogram.length > 0) {
+    out(EOL + '  title match (nothing is discarded — low scores are ranked last, not dropped)');
+    for (const band of histogram) {
+      out(
+        `    ${band.band.padEnd(7)} ${String(band.n).padStart(5)} ads, cheapest ${money(band.cheapest)}`
+      );
+    }
+  }
 
   if (funnel.length > 0) {
     out('\n  triage funnel (ads dropped per stage)');
@@ -301,7 +327,7 @@ const main = async (): Promise<number> => {
   // are how you look at a finished sweep, and demanding a search term to do that
   // would be nonsense.
   const dataDir = values['data-dir'] ? String(values['data-dir']) : '.garimpo';
-  const readOnly = command === 'runs' || command === 'report';
+  const readOnly = command === 'runs' || command === 'report' || command === 'candidates';
   const profile = readOnly ? undefined : buildProfile(values);
   const store = new Store(profile?.dataDir ?? dataDir);
 
@@ -309,6 +335,50 @@ const main = async (): Promise<number> => {
     if (command === 'runs') {
       const rows = store.listRuns(Number(values.top ?? 20));
       process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+      return 0;
+    }
+
+    if (command === 'candidates') {
+      const id = values.run ? String(values.run) : store.latestRunId();
+      if (!id) {
+        log('no runs stored yet');
+        return 1;
+      }
+
+      const histogram = store.matchHistogram(id);
+      const rows = store.candidates(id, {
+        minMatchScore: values['min-match'] === undefined ? 0 : Number(values['min-match']),
+        limit: Number(values.top ?? 50),
+        ...(values['max-price'] === undefined ? {} : { maxPrice: Number(values['max-price']) }),
+      });
+
+      if (values.json === true) {
+        process.stdout.write(
+          `${JSON.stringify({ run: id, histogram, candidates: rows }, null, 2)}\n`
+        );
+        return 0;
+      }
+
+      const out = (line: string) => process.stdout.write(`${line}\n`);
+      out(`\nCandidates in ${id}, best match first`);
+      out('  match  price        location                  title');
+      for (const row of rows) {
+        out(
+          `  ${String(row['match_score']).padStart(5)}  ` +
+            `${money(row['price'] as number).padEnd(12)} ` +
+            `${String(row['location'] ?? '')
+              .slice(0, 24)
+              .padEnd(25)} ` +
+            `${String(row['title']).slice(0, 58)}`
+        );
+      }
+      out('\n  match-score bands');
+      for (const band of histogram) {
+        out(
+          `    ${band.band.padEnd(7)} ${String(band.n).padStart(5)} ads, cheapest ${money(band.cheapest)}`
+        );
+      }
+      out('');
       return 0;
     }
 
@@ -377,8 +447,8 @@ const main = async (): Promise<number> => {
 
     const now = new Date();
     const id = existing ?? runId(profile, now);
-    const context = await openContext(profile, values, store);
     const budget = newBudget(profile.limits);
+    const context = await openContext(profile, values, store, budget);
 
     try {
       store.startRun(id, profile, now.toISOString());

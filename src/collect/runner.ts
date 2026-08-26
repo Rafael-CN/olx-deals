@@ -8,9 +8,33 @@ import { CollectionHalted, RateGovernor, isBlockError } from './governor.js';
 import { FetchOutcome, HtmlFetcher, RequestMeter, looksBlocked } from './fetcher.js';
 import { BlockMemory } from './cooldown.js';
 import { Shard, shardKey } from './shard.js';
+import { scoreBestMatch } from '../triage/match.js';
+import { allQueries } from '../config/profile.js';
 
 /** Ads per search page on olx.com.br. */
 const PAGE_SIZE = 50;
+
+/**
+ * Rates every card against the run's queries before it is stored.
+ *
+ * Free — it is string work on data already in hand — and it is what lets the
+ * corpus keep everything the search returned while still being able to say which
+ * ads actually answer the question.
+ */
+const scoreListings = (
+  context: RunnerContext,
+  listings: readonly Listing[]
+): Map<string, { score: number; detail: unknown }> => {
+  const queries = allQueries(context.profile);
+  const demote = context.profile.demote;
+
+  return new Map(
+    listings.map(listing => {
+      const breakdown = scoreBestMatch(listing.title, queries, demote);
+      return [listing.id, { score: breakdown.score, detail: breakdown }];
+    })
+  );
+};
 
 export interface RunnerContext {
   readonly scraper: OLXBRScraper;
@@ -39,6 +63,19 @@ export interface Budget {
   readonly deadline: number;
 }
 
+/**
+ * The gate every network operation passes through: pace it, then charge it.
+ *
+ * Handed to the fetcher so that an anchor navigation costs the same as a document
+ * fetch instead of slipping past both the pacing and the budget.
+ */
+export const makeGate = (governor: RateGovernor, budget: Budget) => async (): Promise<void> => {
+  if (budget.requests <= 0) throw new CollectionHalted('request budget exhausted');
+  if (Date.now() > budget.deadline) throw new CollectionHalted('run time limit reached');
+  await governor.acquire();
+  budget.requests -= 1;
+};
+
 export const newBudget = (limits: Limits): Budget => ({
   requests: limits.maxRequests,
   cards: limits.maxCards,
@@ -48,7 +85,8 @@ export const newBudget = (limits: Limits): Budget => ({
 
 const filtersFor = (profile: Profile, shard: Shard, page: number): SearchFilters => ({
   domain: 'olx.com.br',
-  query: profile.query,
+  // The slice names its own phrasing when the run sweeps several.
+  query: shard.query ?? profile.query,
   ...(shard.category ? { category: shard.category as CategoryId } : {}),
   ...(shard.state ? { location: shard.state as LocationId } : {}),
   ...(shard.minPrice === undefined ? {} : { minPrice: shard.minPrice }),
@@ -88,9 +126,9 @@ const fetchHtml = async (
   url: string
 ): Promise<FetchOutcome> => {
   spend(context, budget);
-  await context.governor.acquire();
-  budget.requests -= 1;
 
+  // Pacing and the budget are charged by the fetcher gate (see makeGate), so an
+  // anchor navigation is accounted for exactly like the document fetch it enables.
   let outcome: FetchOutcome;
   try {
     outcome = await context.fetcher.get(url);
@@ -202,7 +240,13 @@ export const flushProbedPages = (
     const probed = harvest.get(shard.key);
     if (!probed || probed.listings.length === 0) continue;
 
-    newAds += context.store.saveCards(runId, shard.key, probed.listings, seenAt);
+    newAds += context.store.saveCards(
+      runId,
+      shard.key,
+      probed.listings,
+      seenAt,
+      scoreListings(context, probed.listings)
+    );
     context.store.updateShard(runId, shard.key, {
       pagesDone: 1,
       cardsSeen: probed.listings.length,
@@ -281,7 +325,13 @@ export const collect = async (
           context.scraper.readSearchPage(page, filters)
         );
 
-        const fresh = store.saveCards(runId, shard.key, result.listings, new Date().toISOString());
+        const fresh = store.saveCards(
+          runId,
+          shard.key,
+          result.listings,
+          new Date().toISOString(),
+          scoreListings(context, result.listings)
+        );
         newAds += fresh;
         shardCards += result.listings.length;
         cardsSeen += result.listings.length;
@@ -366,17 +416,29 @@ export const enrich = async (
   const pending = store.adsAwaitingDetail(
     runId,
     Math.min(budget.details, 5000),
-    context.profile.limits.refreshDetailAfterDays
+    context.profile.limits.refreshDetailAfterDays,
+    {
+      minMatchScore: context.profile.minMatchScore,
+      sampleBy: context.profile.sampleBy,
+    }
   );
   const needed = context.neededSellerFields;
   log(
-    `${pending.length} ad page(s) to read` +
+    `${pending.length} ad page(s) to read across ` +
+      `${new Set(pending.map(ad => hostOf(ad.url))).size} origin(s), ` +
+      `picked by ${context.profile.sampleBy} ` +
+      `from candidates scoring >= ${context.profile.minMatchScore}` +
       (needed.length > 0
         ? ` (gates need seller ${needed.join(', ')}; ads missing any of those get a full load)`
         : ' (no seller gate, so one request each)')
   );
 
-  for (const ad of pending) {
+  // Grouped by host so a nationwide read anchors each state subdomain once
+  // instead of bouncing between them. Sampling already chose which ads; this only
+  // chooses the order.
+  const ordered = [...pending].sort((a, b) => hostOf(a.url).localeCompare(hostOf(b.url)));
+
+  for (const ad of ordered) {
     if (budget.details <= 0) {
       halted = 'detail budget reached';
       break;
@@ -420,4 +482,12 @@ export const enrich = async (
   }
 
   return { fetched, failed, upgraded, halted };
+};
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
 };

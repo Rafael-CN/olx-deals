@@ -411,6 +411,37 @@ export const ProfileSchema = z.object({
   /** Free text passed to OLX's `q`. */
   query: z.string().min(1),
   /**
+   * Extra phrasings to sweep into the same corpus.
+   *
+   * A gem hunt is not one search. "redmagic 10 pro", "red magic 10 pro", "nubia
+   * redmagic 10" and "redmagic 10" find overlapping but different sets, because
+   * OLX ranks on the words a seller happened to type — and the ad nobody else
+   * finds is the one that can sit under the going rate. Every query lands in one
+   * run, so the price reference is built over the union.
+   */
+  queries: StringListSchema,
+  /**
+   * Words that mark a listing as a neighbouring model or an accessory. These
+   * lower an ad's match score; they never remove it.
+   */
+  demote: StringListSchema,
+  /**
+   * Ads scoring below this on title match are collected and kept but not
+   * considered for enrichment. Low by default: the point of scoring instead of
+   * filtering is that the threshold can be raised later for free.
+   */
+  minMatchScore: z.number().min(0).max(100).default(25),
+  /**
+   * How many of the surviving candidates to actually read, and how to pick them.
+   *
+   * A nationwide sweep can turn up thousands of plausible ads, and reading all of
+   * them is hours. Sampling makes the trade explicit: 'match' reads the ads that
+   * best answer the query, 'price' the cheapest, 'spread' takes a stratified slice
+   * across price bands so the shape of the market is visible from a small sample,
+   * and 'random' is an unbiased look.
+   */
+  sampleBy: z.enum(['match', 'price', 'spread', 'random']).default('match'),
+  /**
    * Category slug paths, e.g. "celulares" or
    * "autos-e-pecas/carros-vans-e-utilitarios". Empty searches every category.
    */
@@ -437,6 +468,12 @@ export type Profile = z.infer<typeof ProfileSchema>;
 
 export const parseProfile = (input: unknown): Profile => ProfileSchema.parse(input);
 
+/** Every phrasing a run sweeps: the primary query plus any aliases. */
+export const allQueries = (profile: Profile): string[] => [
+  profile.query,
+  ...profile.queries.filter(query => query.trim() && query.trim() !== profile.query.trim()),
+];
+
 /**
  * A sane starting point for hunting one specific used product: keep only ads
  * that are actually selling it, in usable shape, from a seller with a record.
@@ -447,13 +484,17 @@ export const gemHuntPreset = (overrides: {
   require?: string[];
   reject?: string[];
   categories?: string[];
+  queries?: string[];
 }): Profile =>
   parseProfile({
     name: overrides.name,
     query: overrides.query,
+    queries: overrides.queries ?? [],
     categories: overrides.categories ?? [],
+    demote: overrides.reject ?? [],
     stages: [
-      { type: 'title-match', require: overrides.require ?? [], reject: overrides.reject ?? [] },
+      // Deliberately no title-match stage. Titles are scored, not filtered — a
+      // hard requirement here is what reduced a 191-result search to two ads.
       { type: 'for-sale' },
       { type: 'has-image', min: 1 },
       { type: 'price-range', allowMissing: false },

@@ -1,10 +1,12 @@
-import { BRAZIL_STATES, Limits, Profile } from '../config/profile.js';
+import { allQueries, BRAZIL_STATES, Limits, Profile } from '../config/profile.js';
 
 /**
  * One addressable slice of a search: a state, a category and a price band, any
  * of which may be open.
  */
 export interface Shard {
+  /** Which phrasing this slice searches; absent means the profile's primary. */
+  readonly query?: string | undefined;
   readonly state?: string | undefined;
   readonly category?: string | undefined;
   readonly minPrice?: number | undefined;
@@ -192,7 +194,11 @@ export const planShards = async (
     ...(categories.length === 1 && categories[0] ? { category: categories[0] } : {}),
   };
 
-  await visit(root, 0, new Set());
+  // Each phrasing is planned independently: their result sets overlap, and the
+  // store deduplicates by ad id, so the union costs less than the sum.
+  for (const query of allQueries(profile)) {
+    await visit({ ...root, query }, 0, new Set());
+  }
 
   const all = [...shards, ...truncatedShards];
   if (all.some(shard => shard.minPrice !== undefined || shard.maxPrice !== undefined)) {

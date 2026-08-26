@@ -43,7 +43,16 @@ export class HtmlFetcher {
   private constructor(
     private readonly context: BrowserContext,
     private readonly parser: Page,
-    private readonly waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'
+    private readonly waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit',
+    /**
+     * Called before every network operation, anchor navigations included.
+     *
+     * This exists because anchoring used to bypass pacing entirely: reading ad
+     * pages across the country means one navigation per state subdomain, and
+     * thirteen of those fired back to back with nothing in between is what a
+     * scanner looks like. Everything that touches the site goes through here.
+     */
+    private readonly gate: () => Promise<void>
   ) {}
 
   /**
@@ -53,10 +62,11 @@ export class HtmlFetcher {
   static async create(
     context: BrowserContext,
     parserContext: BrowserContext,
+    gate: () => Promise<void> = async () => {},
     waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit' = 'domcontentloaded'
   ): Promise<HtmlFetcher> {
     const parser = await parserContext.newPage();
-    return new HtmlFetcher(context, parser, waitUntil);
+    return new HtmlFetcher(context, parser, waitUntil, gate);
   }
 
   /**
@@ -67,7 +77,10 @@ export class HtmlFetcher {
    * at all — which is the cheapest possible request for both sides.
    */
   async get(url: string): Promise<FetchOutcome> {
+    // Anchoring may hit the site itself, so it gates inside anchorFor; this gate
+    // covers the document fetch that follows.
     const page = await this.anchorFor(new URL(url).origin);
+    await this.gate();
     this.requests += 1;
 
     const outcome = await page.evaluate(async target => {
@@ -119,6 +132,7 @@ export class HtmlFetcher {
     const existing = this.anchors.get(origin);
     if (existing && !existing.isClosed()) return existing;
 
+    await this.gate();
     const page = await this.context.newPage();
     // robots.txt is the lightest document that establishes the origin, and it is
     // the one page a crawler has an actual reason to read first.

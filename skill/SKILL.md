@@ -83,6 +83,18 @@ Precisa de Node 22+ (usa `node:sqlite`) e Chromium do Playwright
 (`npx playwright install chromium`). Se o Chromium empacotado falhar, passe
 `--channel chrome` para usar o Chrome instalado.
 
+## Regra que não se quebra: um alvo, um run
+
+Se o usuário pedir duas coisas — "RedMagic 10 Pro **e** jóias de celular até 3k" —
+são **dois runs com dois profiles**. Nunca um.
+
+Já quebrou uma vez: os dois alvos entraram num profile só, o `--max-price 3000`
+do segundo foi aplicado ao primeiro, e uma busca de 191 anúncios devolveu 2 —
+porque RedMagic 10 Pro custa R$ 3.000–4.700. Se você misturar alvos, o filtro de
+um come o outro em silêncio.
+
+Um alvo = um `--name`, um profile, um run. Rode em sequência e relate junto.
+
 ## Fluxo
 
 ### Passo 1 — entreviste o usuário
@@ -114,12 +126,24 @@ resultado. Se o usuário já deu a informação, não repita.
   levantamento em `pass`.
 - *Idade do anúncio* e *mínimo de fotos*, se importar.
 
-**Rodada 3 — orçamento** (quando a abrangência for grande)
+**Rodada 3 — profundidade da triagem** (sempre, é a decisão que define o tempo)
 
-- *Quantos anúncios*: cards a coletar (`--max-cards`) e páginas de detalhe a ler
-  (`--max-details`). Deixe claro o custo: detalhe é uma requisição por anúncio.
-- *Quanto tempo*: `--max-minutes`. Uma varredura nacional respeitando o ritmo
-  leva horas, não minutos.
+Coletar card é barato (50 por requisição). Ler a página do anúncio é caro (1 cada,
+ou ~60 se o portão exigir idade de conta/nota). Então a pergunta real é: **de
+quantos dos candidatos você quer que eu leia a página?**
+
+- *Varredura completa*: lê todos os candidatos acima do corte de match. Honesto,
+  mas 2.000 candidatos = 2.000 requisições ≈ horas.
+- *Amostra rápida (recomendado)*: `--sample 200` a `--sample 300`. Termina em
+  minutos e quase sempre já contém a jóia, porque a amostra é ordenada.
+- *Como escolher a amostra* (`--sample-by`):
+  - `match` (padrão) — os que melhor respondem à busca.
+  - `price` — os mais baratos primeiro, independente de quão bem casam.
+  - `spread` — fatia estratificada por faixa de preço; mostra o formato do
+    mercado com pouca leitura.
+  - `random` — olhada sem viés.
+
+Diga o número de requisições estimado antes de confirmar. `garimpo plan` calcula.
 
 **Rodada 4 — só no modo jóia**
 
@@ -129,7 +153,44 @@ resultado. Se o usuário já deu a informação, não repita.
   Explique que existe: a 10% da mediana não é pechincha, é golpe, erro de
   digitação, sinal de parcelamento ou capinha anunciada com o nome do aparelho.
 
-### Passo 2 — monte os termos de casamento
+### Passo 2 — seja proativo com as buscas (crítico no modo jóia)
+
+**Uma busca só é o que o usuário faria à mão. O seu valor está em fazer várias.**
+
+A OLX ranqueia pelas palavras que o vendedor por acaso digitou. Quem escreveu o
+título errado, incompleto ou com o modelo trocado **não é encontrado por
+ninguém** — e é justamente por isso que o anúncio pode estar abaixo do preço.
+Achar esses é o trabalho.
+
+Monte de 3 a 6 frasagens e passe todas em `--queries`. Elas entram no **mesmo
+run**, o banco deduplica por id, e a mediana é calculada sobre a união:
+
+- a busca exata: `redmagic 10 pro`
+- espaçamento alternativo: `red magic 10 pro`
+- com e sem fabricante: `nubia redmagic 10`, `redmagic 10`
+- só a linha, mais larga: `redmagic` (deixa o score separar depois)
+- erro de digitação comum, quando plausível: `redmagic 10 pró`
+
+```bash
+garimpo hunt --query 'redmagic 10 pro'   --queries 'red magic 10 pro,nubia redmagic 10,redmagic 10' ...
+```
+
+Custo real: as buscas se sobrepõem muito, então a união custa bem menos que a
+soma. No caso medido, 4 frasagens nacionais custaram 8 requisições e trouxeram
+191 anúncios.
+
+### Passo 2b — demote, não rejeite
+
+Esqueça `--require`/`--reject` como filtro no modo jóia. Use **`--demote`**: os
+termos derrubam o score do anúncio mas **não o removem do acervo**.
+
+- modelos vizinhos: `10 air`, `10 lite`, `10s`, `redmagic 9`
+- acessório: `capa`, `capinha`, `pel[ií]cula`, `carregador`, `fone`, `suporte`
+
+Atenção a variantes que contêm a busca inteira: "Redmagic **10s** pro" recebe 100
+porque contém "redmagic 10 pro". Se o usuário quer só o 10 Pro, `--demote '10s'`.
+
+### Passo 2c — monte os termos de casamento
 
 Isto é o que separa uma varredura útil de uma inútil, e o usuário não vai pensar
 nisso. A busca da OLX é fuzzy: `s22 ultra` traz S22 comum, S22+, S21 Ultra, S23
@@ -176,6 +237,28 @@ garimpo gems    --run <id>
 Comece com `plan`: ele diz quantas fatias e quantos anúncios estão alcançáveis
 gastando uma requisição por fatia. Mostre esse número ao usuário antes de
 autorizar uma coleta grande.
+
+### Passo 4b — olhe o acervo antes de gastar
+
+Depois de coletar, **antes de ler página de anúncio**, veja a paisagem. Custa
+zero requisições:
+
+```bash
+garimpo candidates --run <id> --min-match 70 --top 20
+garimpo candidates --run <id> --min-match 50 --max-price 3000 --top 20
+```
+
+Sai ordenado por score de match, com preço e local, mais o histograma de bandas.
+Use isso para:
+
+- **Escolher o corte com dado, não com palpite.** Se a banda 90-100 tem 15
+  anúncios e a 70-89 tem 22, ler as duas custa 37 requisições.
+- **Achar o que está barato numa banda mais baixa.** Foi assim que apareceu
+  "Celular Redmagic" a R$ 2.700 com score 70 — título vago, mais barato que
+  qualquer coisa na banda 90-100 (piso R$ 3.000). Título ruim é o que esconde
+  preço bom. Leia esses.
+- **Perceber que o corte está errado.** Se a banda 90-100 está vazia, sua busca
+  não achou o produto e nenhum ajuste de preço vai resolver.
 
 ### Passo 5 — leia resultados sem estourar o contexto
 
@@ -291,7 +374,12 @@ Rode `garimpo --help`. As que mais importam:
 | `--profile <path>` | profile JSON; toda flag sobrescreve |
 | `--states sp,rj` | UFs (vazio = 27) |
 | `--categories celulares` | slug de categoria da OLX |
-| `--require` / `--reject` | casamento de título (regex) |
+| `--queries 'a,b,c'` | frasagens extras no mesmo acervo |
+| `--demote 'capa,10s,air'` | derruba o score; nunca remove |
+| `--min-match 25` | corte de score para considerar leitura |
+| `--sample 250` | quantos candidatos ler de fato |
+| `--sample-by match\|price\|spread\|random` | quais escolher |
+| `--require` / `--reject` | casamento de título como filtro **duro** (evite no modo jóia) |
 | `--tolerate none\|minor\|major` | pior defeito aceito |
 | `--seller-*` | nota, vendas, taxa de cancelamento, idade da conta, verificado |
 | `--seller-unknown pass\|fail` | vendedor sem histórico |
@@ -305,3 +393,9 @@ Rode `garimpo --help`. As que mais importam:
 | `--min-discount` / `--min-z` / `--min-reference` | rigor do garimpo |
 | `--run <id>` | retomar |
 | `--json` | saída estruturada |
+
+E o comando que não gasta requisição nenhuma:
+
+```bash
+garimpo candidates --run <id> --min-match 70 --top 20 [--json]
+```

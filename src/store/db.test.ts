@@ -186,6 +186,135 @@ describe('Store', () => {
     expect(store.runAds('run-2')[0]?.price).toBe(850);
   });
 
+  it('keeps every ad and ranks them, rather than dropping poor matches', () => {
+    store.saveCards(
+      'run-1',
+      's1',
+      [
+        listing('exact', 'R$ 4.300', 'REDMAGIC 10 PRO'),
+        listing('vague', 'R$ 2.700', 'Celular Redmagic'),
+        listing('other', 'R$ 250', 'Capa para Redmagic'),
+      ],
+      'now',
+      new Map([
+        ['exact', { score: 100, detail: { exactPhrase: true } }],
+        ['vague', { score: 70, detail: { exactPhrase: false } }],
+        ['other', { score: 21, detail: { demotedBy: ['capa'] } }],
+      ])
+    );
+
+    // Nothing was discarded: the vague title, which is the kind that hides a
+    // bargain because nobody finds it, is still in the corpus.
+    expect(store.countRunAds('run-1')).toBe(3);
+    expect(store.candidates('run-1', { minMatchScore: 70 }).map(row => row['id'])).toEqual([
+      'exact',
+      'vague',
+    ]);
+    expect(store.candidates('run-1', { minMatchScore: 0 })).toHaveLength(3);
+  });
+
+  it('keeps the best score when several phrasings find the same ad', () => {
+    store.saveCards(
+      'run-1',
+      'q1',
+      [listing('a', 'R$ 100')],
+      'now',
+      new Map([['a', { score: 45, detail: {} }]])
+    );
+    store.saveCards(
+      'run-1',
+      'q2',
+      [listing('a', 'R$ 100')],
+      'now',
+      new Map([['a', { score: 92, detail: {} }]])
+    );
+    expect(store.candidates('run-1')[0]?.['match_score']).toBe(92);
+
+    // And a worse later score does not overwrite the better one.
+    store.saveCards(
+      'run-1',
+      'q3',
+      [listing('a', 'R$ 100')],
+      'now',
+      new Map([['a', { score: 30, detail: {} }]])
+    );
+    expect(store.candidates('run-1')[0]?.['match_score']).toBe(92);
+  });
+
+  it('buckets the corpus by match score, which is how you see if a filter ate it', () => {
+    store.saveCards(
+      'run-1',
+      's1',
+      [listing('a', 'R$ 10'), listing('b', 'R$ 20'), listing('c', 'R$ 30')],
+      'now',
+      new Map([
+        ['a', { score: 95, detail: {} }],
+        ['b', { score: 72, detail: {} }],
+        ['c', { score: 5, detail: {} }],
+      ])
+    );
+
+    const bands = Object.fromEntries(store.matchHistogram('run-1').map(b => [b.band, b.n]));
+    expect(bands).toMatchObject({ '90-100': 1, '70-89': 1, '0-24': 1 });
+  });
+
+  it('samples which candidates to read, and honours the match floor', () => {
+    store.saveCards(
+      'run-1',
+      's1',
+      [listing('best', 'R$ 5.000'), listing('cheap', 'R$ 900'), listing('weak', 'R$ 100')],
+      'now',
+      new Map([
+        ['best', { score: 100, detail: {} }],
+        ['cheap', { score: 80, detail: {} }],
+        ['weak', { score: 10, detail: {} }],
+      ])
+    );
+    store.saveVerdicts(
+      'run-1',
+      'card',
+      ['best', 'cheap', 'weak'].map(adId => ({
+        adId,
+        passed: true,
+        stages: [{ id: 'for-sale', passed: true }],
+      }))
+    );
+
+    const byMatch = store.adsAwaitingDetail('run-1', 10, undefined, {
+      minMatchScore: 50,
+      sampleBy: 'match',
+    });
+    expect(byMatch.map(ad => ad.id)).toEqual(['best', 'cheap']);
+
+    const byPrice = store.adsAwaitingDetail('run-1', 10, undefined, {
+      minMatchScore: 50,
+      sampleBy: 'price',
+    });
+    expect(byPrice.map(ad => ad.id)).toEqual(['cheap', 'best']);
+
+    // The floor keeps the weak match out of an expensive read without deleting it.
+    expect(byMatch.map(ad => ad.id)).not.toContain('weak');
+    expect(store.candidates('run-1', { minMatchScore: 0 })).toHaveLength(3);
+  });
+
+  it('caps the sample, so a corpus of thousands can be read in hundreds', () => {
+    const many = Array.from({ length: 40 }, (_, i) => listing(`ad-${i}`, `R$ ${100 + i}`));
+    store.saveCards(
+      'run-1',
+      's1',
+      many,
+      'now',
+      new Map(many.map((ad, i) => [ad.id as string, { score: 100 - i, detail: {} }]))
+    );
+    store.saveVerdicts(
+      'run-1',
+      'card',
+      many.map(ad => ({ adId: ad.id as string, passed: true, stages: [] }))
+    );
+
+    expect(store.adsAwaitingDetail('run-1', 5, undefined, { sampleBy: 'match' })).toHaveLength(5);
+  });
+
   it('ranks stored gems by score and leaves rejected ones out of the report', () => {
     store.saveCards('run-1', 's1', [listing('gem', 'R$ 900'), listing('meh', 'R$ 2.400')], 'now');
     store.saveGems('run-1', [

@@ -94,12 +94,43 @@ Applying any sort makes OLX answer with a different result set:
 A sort can narrow the set or widen it, so this is not "sorting filters". Sweeps
 always run unsorted, which is the widest set, and order locally.
 
-### Search is fuzzy, so title matching is not optional
+### Search is fuzzy, so titles are scored, not filtered
 
-Of those 71 `s22 ultra` hits in Rio Grande do Sul, seven were actually S22 Ultras.
-The rest were S22, S22+, S21 Ultra, S23 Ultra, cases and screen protectors. That is
-what `--require` and `--reject` are for, and getting them right matters more than
-any other setting.
+Of 71 `s22 ultra` hits in Rio Grande do Sul, seven were actually S22 Ultras. The
+rest were S22, S22+, S21 Ultra, S23 Ultra, cases and screen protectors.
+
+The obvious response — require the words in the title — is a trap, and it cost a
+real search: a nationwide hunt for "redmagic 10 pro" that OLX answered with 191
+ads came back with two. So titles get a 0-100 match score instead, weighted by
+token length so matching "redmagic" counts for four times matching "10", with a
+bonus for the query appearing as one phrase and a heavy demotion for accessory and
+sibling-model words. Nothing is dropped.
+
+That matters beyond tidiness. A badly titled listing is *under-found by everyone*,
+which is exactly why it can sit below the going rate. In the same run, the cheapest
+ad scoring 90+ was R$ 3.000, while a listing titled just "Celular Redmagic" scored
+70 at R$ 2.700. A hard filter deletes that ad; a score ranks it and lets you look.
+
+`garimpo candidates` browses the ranked base, and the threshold moves afterwards
+without spending a request:
+
+```bash
+garimpo candidates --run <id> --min-match 70 --max-price 3000 --top 20
+```
+
+### One query is what a person would type; a hunt runs several
+
+`--queries` sweeps extra phrasings into the same run — "red magic 10 pro", "nubia
+redmagic 10", "redmagic 10" — because OLX ranks on the words the seller happened
+to type. The sets overlap heavily, so the union costs far less than the sum: four
+nationwide phrasings cost 8 requests and returned 191 ads.
+
+### Reading every candidate is optional
+
+Collecting cards is 50 per request; reading an ad page is one each. `--sample N`
+caps how many candidates get read and `--sample-by` picks which: `match` (best
+answers), `price` (cheapest), `spread` (stratified across price bands, so a small
+sample still shows the market's shape) or `random`.
 
 ### Cloudflare is the real bottleneck, and a browser is the wrong client
 

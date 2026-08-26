@@ -61,9 +61,13 @@ CREATE TABLE IF NOT EXISTS ads (
 );
 
 CREATE TABLE IF NOT EXISTS run_ads (
-  run_id   TEXT NOT NULL,
-  ad_id    TEXT NOT NULL,
-  shard    TEXT NOT NULL,
+  run_id       TEXT NOT NULL,
+  ad_id        TEXT NOT NULL,
+  shard        TEXT NOT NULL,
+  -- 0-100, how well the title answers the run's queries. Stored rather than
+  -- recomputed so a threshold can be moved without touching the site.
+  match_score  INTEGER NOT NULL DEFAULT 0,
+  match_json   TEXT,
   PRIMARY KEY (run_id, ad_id)
 );
 
@@ -114,6 +118,7 @@ CREATE TABLE IF NOT EXISTS gems (
 
 CREATE INDEX IF NOT EXISTS ads_price ON ads (price);
 CREATE INDEX IF NOT EXISTS run_ads_run ON run_ads (run_id);
+CREATE INDEX IF NOT EXISTS run_ads_match ON run_ads (run_id, match_score DESC);
 CREATE INDEX IF NOT EXISTS verdicts_run ON verdicts (run_id, phase, passed);
 CREATE INDEX IF NOT EXISTS gems_run_score ON gems (run_id, score DESC);
 `;
@@ -288,7 +293,14 @@ export class Store {
    * its price and last-seen time instead of duplicating it; the run link records
    * that this sweep saw it.
    */
-  saveCards(runId: string, shardKey: string, listings: readonly Listing[], seenAt: string): number {
+  saveCards(
+    runId: string,
+    shardKey: string,
+    listings: readonly Listing[],
+    seenAt: string,
+    /** Title relevance per ad id, so a threshold can be applied later for free. */
+    scores?: Map<string, { score: number; detail: unknown }>
+  ): number {
     const upsertAd = this.db.prepare(
       `INSERT INTO ads (id, url, title, price, location, image_url, published_at, first_seen_at, last_seen_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -302,8 +314,13 @@ export class Store {
          last_seen_at = excluded.last_seen_at`
     );
     const linkRun = this.db.prepare(
-      `INSERT INTO run_ads (run_id, ad_id, shard) VALUES (?, ?, ?)
-       ON CONFLICT(run_id, ad_id) DO NOTHING`
+      `INSERT INTO run_ads (run_id, ad_id, shard, match_score, match_json) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(run_id, ad_id) DO UPDATE SET
+         -- An ad found by several phrasings keeps its best score.
+         match_score = MAX(run_ads.match_score, excluded.match_score),
+         match_json = CASE
+           WHEN excluded.match_score > run_ads.match_score THEN excluded.match_json
+           ELSE run_ads.match_json END`
     );
 
     let fresh = 0;
@@ -321,8 +338,18 @@ export class Store {
           seenAt,
           seenAt
         );
-        const result = linkRun.run(runId, listing.id, shardKey);
-        if (result.changes > 0) fresh += 1;
+        const scored = scores?.get(listing.id);
+        const before = this.db
+          .prepare(`SELECT 1 FROM run_ads WHERE run_id = ? AND ad_id = ?`)
+          .get(runId, listing.id);
+        linkRun.run(
+          runId,
+          listing.id,
+          shardKey,
+          scored?.score ?? 0,
+          scored ? JSON.stringify(scored.detail) : null
+        );
+        if (!before) fresh += 1;
       }
       this.db.exec('COMMIT');
     } catch (error) {
@@ -388,13 +415,28 @@ export class Store {
    * over a known product should cost almost nothing, so anything fetched inside
    * the freshness window is skipped rather than fetched again.
    */
-  adsAwaitingDetail(runId: string, limit: number, refreshAfterDays?: number): StoredAd[] {
+  adsAwaitingDetail(
+    runId: string,
+    limit: number,
+    refreshAfterDays?: number,
+    options: { minMatchScore?: number; sampleBy?: 'match' | 'price' | 'spread' | 'random' } = {}
+  ): StoredAd[] {
     // Omitted means never re-read: the safe default, since re-reading is the
     // expensive mistake. A number re-reads anything older than that.
     const cutoff =
       refreshAfterDays === undefined
         ? ''
         : new Date(Date.now() - refreshAfterDays * 86_400_000).toISOString();
+    // Sampling is how a sweep that found thousands of plausible ads finishes
+    // today. 'spread' walks price bands so a small sample still shows the shape of
+    // the market; the others are simply the best, the cheapest, or unbiased.
+    const order = {
+      match: 'r.match_score DESC, a.price ASC',
+      price: 'a.price ASC',
+      random: 'RANDOM()',
+      spread: 'CAST(a.price / 250 AS INTEGER), r.match_score DESC',
+    }[options.sampleBy ?? 'match'];
+
     return this.db
       .prepare(
         `SELECT a.id, a.url, a.title, a.price, a.location, a.image_url, a.published_at
@@ -403,11 +445,65 @@ export class Store {
          JOIN verdicts v ON v.ad_id = a.id AND v.run_id = r.run_id AND v.phase = 'card'
          LEFT JOIN ad_details d ON d.ad_id = a.id
          WHERE r.run_id = ? AND v.passed = 1
+           AND r.match_score >= ?
            AND (d.ad_id IS NULL OR d.fetched_at < ?)
-         ORDER BY a.price ASC NULLS LAST
+         ORDER BY ${order}
          LIMIT ?`
       )
-      .all(runId, cutoff, limit) as never;
+      .all(runId, options.minMatchScore ?? 0, cutoff, limit) as never;
+  }
+
+  /**
+   * The ranked candidate base, for looking at the landscape before spending
+   * anything on it.
+   *
+   * This is what makes scoring instead of filtering pay off: every ad the search
+   * returned is here, ordered by how well it answers the query, and the threshold
+   * is a parameter rather than a decision baked in at collection time.
+   */
+  candidates(
+    runId: string,
+    options: { minMatchScore?: number; limit?: number; maxPrice?: number } = {}
+  ): Array<Record<string, unknown>> {
+    return this.db
+      .prepare(
+        `SELECT r.match_score, a.id, a.title, a.price, a.location, a.url, a.published_at,
+                (d.ad_id IS NOT NULL) AS enriched
+         FROM run_ads r
+         JOIN ads a ON a.id = r.ad_id
+         LEFT JOIN ad_details d ON d.ad_id = a.id
+         WHERE r.run_id = ?
+           AND r.match_score >= ?
+           AND (? IS NULL OR a.price <= ?)
+         ORDER BY r.match_score DESC, a.price ASC
+         LIMIT ?`
+      )
+      .all(
+        runId,
+        options.minMatchScore ?? 0,
+        options.maxPrice ?? null,
+        options.maxPrice ?? null,
+        options.limit ?? 50
+      ) as never;
+  }
+
+  /** How the run's ads are distributed across match-score bands. */
+  matchHistogram(runId: string): Array<{ band: string; n: number; cheapest: number | null }> {
+    return this.db
+      .prepare(
+        `SELECT CASE
+                  WHEN match_score >= 90 THEN '90-100'
+                  WHEN match_score >= 70 THEN '70-89'
+                  WHEN match_score >= 50 THEN '50-69'
+                  WHEN match_score >= 25 THEN '25-49'
+                  ELSE '0-24' END AS band,
+                COUNT(*) AS n,
+                MIN(a.price) AS cheapest
+         FROM run_ads r JOIN ads a ON a.id = r.ad_id
+         WHERE r.run_id = ?
+         GROUP BY band ORDER BY band DESC`
+      )
+      .all(runId) as never;
   }
 
   detailsFor(runId: string): Array<StoredAd & StoredDetail> {
