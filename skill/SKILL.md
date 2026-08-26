@@ -44,7 +44,7 @@ garimpo --help
 ```
 
 Se não existir, o repositório está em `~/Documents/Projetos/Claude/olx-mcp`
-(ou onde `GARIMPO_HOME` apontar):
+(o diretório ainda tem o nome antigo; o pacote é `garimpo-olx`):
 
 ```bash
 cd ~/Documents/Projetos/Claude/olx-mcp && npm install && npm run build && npm link
