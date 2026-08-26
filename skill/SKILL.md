@@ -31,12 +31,24 @@ Foram todos medidos contra o site, não deduzidos.
    - **Uma "requisição" não é uma requisição.** Abrir uma página da OLX no
      browser dispara o documento, os chunks do Next, analytics, slots de anúncio
      e as chamadas de API da própria página — dezenas de hits, muitos para
-     olx.com.br. Por isso o `garimpo` **não abre página**: busca o HTML por HTTP
-     (1 requisição) e renderiza num DOM com JS desligado e todas as rotas
-     abortadas. Card e dados estruturados do anúncio vêm no HTML do servidor.
-   - **Só o card do vendedor exige JavaScript.** Ele hidrata no cliente. Então
-     página completa é gasta *por anúncio*, e só se alguma etapa for ler
-     vendedor. Perfil sem `seller` nunca paga por JS.
+     olx.com.br. Por isso o `garimpo` **não abre página**: busca só o documento
+     (1 requisição) e renderiza num DOM com JS desligado e rotas abortadas.
+   - **E busca com o próprio Chrome.** O fetch acontece *dentro* de uma página já
+     parada na origem alvo, via `fetch()` do navegador — TLS do Chrome, headers do
+     Chrome, cookies do Chrome. Buscar pelo Node mandaria um handshake diferente
+     do cliente que ganhou os cookies: menos requisições, cada uma menos coerente.
+     A âncora de cada origem é o `robots.txt` dela.
+   - **Qual portão você escolhe decide o custo.** O HTML do anúncio traz vendas
+     concluídas/canceladas e os selos de verificação, mas **não** traz nome, data
+     de entrada na OLX nem nota — esses só existem depois de hidratar. Então:
+
+     | Portão de vendedor | Custo |
+     |---|---|
+     | `maxCancelRate`, `minSalesCompleted`, `requireVerified`, `requireChannels` | 1 requisição por anúncio |
+     | `minAccountAgeMonths`, `minRating`, `minReviewCount` | página completa por anúncio |
+
+     Se a prioridade é não tomar bloqueio, monte o portão só com os de cima.
+     Medido, não deduzido.
    - O ritmo se adapta (sobe devagar limpo, corta pela metade no bloqueio,
      cooldown dobrando), o run **para** após bloqueios consecutivos, e o
      bloqueio é **lembrado entre invocações**: começar de novo cedo demais é
@@ -227,6 +239,11 @@ Outras alavancas, em ordem de efeito:
   varredura longa contínua: limite de taxa é por janela, e uma pausa real conta
   mais que um gotejar lento.
 - `--pause-every` / `--pause-for` para gaps longos dentro do próprio run.
+- **Rode de madrugada.** `--window 02:00-07:00` só trabalha nessas horas (aceita
+  virar a meia-noite). Site sob carga policia tráfego mais do que site vazio, e
+  uma varredura noturna é mais barata para os dois lados.
+- **Veja o custo antes de gastar.** `garimpo plan` imprime a estimativa de
+  requisições e de tempo. Mostre ao usuário antes de autorizar coleta grande.
 
 **Nunca:** trocar de IP/proxy, randomizar fingerprint, resolver captcha. Isso é
 evasão, não boa vizinhança — e é o que transforma um limite temporário de taxa em

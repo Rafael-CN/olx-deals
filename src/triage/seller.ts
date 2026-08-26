@@ -1,6 +1,44 @@
 import { SellerInfo } from '../core/types.js';
 import { SellerGate } from '../config/profile.js';
 
+/**
+ * Which seller fields a gate has to be able to see.
+ *
+ * This matters to cost, not just correctness. The ad's HTML carries the sales
+ * record and the verification badges, but not the join date, the name or the
+ * rating — those only appear once the seller card hydrates, which means a full
+ * page load. So a gate built on cancellation rate and verification is free, and
+ * one built on account age or rating costs a browser page per ad.
+ *
+ * The enricher reads this to decide, per ad, whether the cheap read was enough.
+ */
+export const requiredSellerFields = (gate: SellerGate): Array<keyof SellerInfo> => {
+  const needed = new Set<keyof SellerInfo>();
+
+  if (gate.minRating !== undefined) needed.add('rating');
+  if (gate.minReviewCount !== undefined) needed.add('reviewCount');
+  if (gate.minSalesCompleted !== undefined) needed.add('salesCompleted');
+  if (gate.maxCancelRate !== undefined) {
+    needed.add('salesCompleted');
+    needed.add('salesCancelled');
+  }
+  if (gate.minAccountAgeMonths !== undefined) needed.add('memberSince');
+  if (gate.maxDispatchDays !== undefined) needed.add('dispatchDays');
+  if (gate.requireVerified) needed.add('verified');
+  if (gate.requireChannels.length > 0) needed.add('verifiedChannels');
+
+  return [...needed];
+};
+
+/** Fields that never survive an HTML-only read, so wanting them implies a page load. */
+export const SELLER_FIELDS_NEEDING_HYDRATION: ReadonlyArray<keyof SellerInfo> = [
+  'name',
+  'memberSince',
+  'rating',
+  'reviewCount',
+  'online',
+];
+
 export interface SellerAssessment {
   readonly passed: boolean;
   readonly reason?: string | undefined;

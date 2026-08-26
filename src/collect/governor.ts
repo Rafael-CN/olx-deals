@@ -1,4 +1,5 @@
 import { Pacing } from '../config/profile.js';
+import { ActiveWindow, msUntilOpen, parseWindow } from './window.js';
 
 export class CollectionHalted extends Error {
   constructor(message: string) {
@@ -36,6 +37,9 @@ export class RateGovernor {
   private nextAllowedAt = 0;
   private lastPauseAtRequest = -1;
   private ceiling: number;
+  private readonly window: ActiveWindow | undefined;
+  /** Told how long the run is about to sit out, so it can say so. */
+  onWindowClosed?: ((waitMs: number) => void) | undefined;
   private requests = 0;
   private blocks = 0;
   private lastBlockAt: number | undefined;
@@ -51,6 +55,7 @@ export class RateGovernor {
   ) {
     this.rpm = pacing.startRequestsPerMinute;
     this.ceiling = pacing.maxRequestsPerMinute;
+    this.window = pacing.activeWindow ? parseWindow(pacing.activeWindow) : undefined;
   }
 
   /**
@@ -71,8 +76,20 @@ export class RateGovernor {
     await this.sleep(pause);
   }
 
+  /** Sleeps out the closed hours, if the run was given a window to work in. */
+  private async waitForWindow(): Promise<void> {
+    if (!this.window) return;
+    const wait = msUntilOpen(this.window, new Date(this.now()));
+    if (wait <= 0) return;
+
+    this.cooldownMs += wait;
+    this.onWindowClosed?.(wait);
+    await this.sleep(wait);
+  }
+
   /** Blocks until the next request is allowed to go out. */
   async acquire(): Promise<void> {
+    await this.waitForWindow();
     await this.pauseIfDue();
 
     const jitter = Math.floor(this.random() * this.pacing.jitterMs);

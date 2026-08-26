@@ -1,5 +1,5 @@
 import { Page } from 'playwright';
-import { CategoryId, Listing, LocationId, SearchFilters } from '../core/types.js';
+import { CategoryId, Listing, LocationId, SearchFilters, SellerInfo } from '../core/types.js';
 import { Limits, Profile } from '../config/profile.js';
 import { OLXBRScraper } from '../scrapers/olx/olx-br.scraper.js';
 import { Store } from '../store/db.js';
@@ -22,10 +22,13 @@ export interface RunnerContext {
   readonly store: Store;
   readonly profile: Profile;
   /**
-   * Whether any stage actually needs the seller card. When nothing does, no ad
-   * ever justifies a full page load, and the run costs one request per ad.
+   * The seller fields the profile's gates have to be able to read.
+   *
+   * Empty means no ad ever justifies a full page load and the run costs one
+   * request per ad. Otherwise an ad is upgraded only when the cheap read came back
+   * missing one of these — so which gates you set decides what the sweep costs.
    */
-  readonly needsSeller: boolean;
+  readonly neededSellerFields: ReadonlyArray<keyof SellerInfo>;
   readonly log: (message: string) => void;
 }
 
@@ -125,11 +128,13 @@ const loadPage = async <T>(
 ): Promise<T> => {
   spend(context, budget);
   await context.governor.acquire();
-  // A page load is many requests; charging it as one is what made the old
-  // budget a fiction. The exact count is unknowable in advance, so it is
-  // charged as ten and the meter reports what it really was.
-  budget.requests -= 10;
 
+  // Charged by measurement, not by guess. A hydrated olx.com.br ad page was
+  // observed to make about sixty requests to the site — the document, the Next.js
+  // chunks, analytics, ad slots and the page's own API calls. An earlier version
+  // of this charged ten, which is why a run that believed it had budget left kept
+  // going until the site said no.
+  const before = context.meter.total;
   try {
     const result = await context.session.withPage(work);
     context.governor.reportSuccess();
@@ -138,23 +143,35 @@ const loadPage = async <T>(
     if (isBlockError(error)) noteBlock(context);
     else context.governor.reportError();
     throw error;
+  } finally {
+    const spent = Math.max(1, context.meter.total - before);
+    budget.requests -= spent;
   }
 };
 
 /**
- * Reads a slice's result count without collecting it. One request buys the answer
- * for a slice that might hold five thousand ads.
+ * Reads a slice's result count, and keeps the page it had to fetch to find out.
+ *
+ * The count lives in the same document as the first fifty cards, so throwing
+ * those away and re-fetching the identical page during collection was one wasted
+ * request per surviving slice — 27 of them on a nationwide plan, and a doubling
+ * of the cost for every slice that fits in a single page. `harvest` collects them
+ * so the caller can hand them straight to the store.
  */
 export const makeProbe =
-  (context: RunnerContext, budget: Budget) =>
+  (context: RunnerContext, budget: Budget, harvest?: Map<string, ProbedPage>) =>
   async (shard: Shard): Promise<number> => {
     const filters = filtersFor(context.profile, shard, 1);
-    const url = context.scraper.searchUrlFor({ ...filters, limit: 1 });
+    const url = context.scraper.searchUrlFor(filters);
     try {
       const outcome = await fetchHtml(context, budget, url);
       const result = await context.fetcher.parse(outcome, page =>
-        context.scraper.readSearchPage(page, { ...filters, limit: 1 })
+        context.scraper.readSearchPage(page, filters)
       );
+      harvest?.set(shardKey(shard), {
+        listings: result.listings,
+        hasNextPage: result.hasNextPage,
+      });
       return result.totalCount;
     } catch (error) {
       if (error instanceof CollectionHalted) throw error;
@@ -162,6 +179,40 @@ export const makeProbe =
       return 0;
     }
   };
+
+export interface ProbedPage {
+  readonly listings: Awaited<ReturnType<OLXBRScraper['readSearchPage']>>['listings'];
+  readonly hasNextPage: boolean;
+}
+
+/**
+ * Writes the pages the planner already fetched, marking those slices as one page
+ * in so collection starts at page two.
+ */
+export const flushProbedPages = (
+  context: RunnerContext,
+  runId: string,
+  harvest: Map<string, ProbedPage>
+): { pages: number; newAds: number } => {
+  let pages = 0;
+  let newAds = 0;
+  const seenAt = new Date().toISOString();
+
+  for (const shard of context.store.pendingShards(runId)) {
+    const probed = harvest.get(shard.key);
+    if (!probed || probed.listings.length === 0) continue;
+
+    newAds += context.store.saveCards(runId, shard.key, probed.listings, seenAt);
+    context.store.updateShard(runId, shard.key, {
+      pagesDone: 1,
+      cardsSeen: probed.listings.length,
+      status: probed.hasNextPage ? 'pending' : 'done',
+    });
+    pages += 1;
+  }
+
+  return { pages, newAds };
+};
 
 export interface CollectOutcome {
   readonly shardsDone: number;
@@ -212,7 +263,10 @@ export const collect = async (
     store.updateShard(runId, shard.key, { status: 'running' });
 
     let pagesDone = shard.pages_done;
-    let shardCards = 0;
+    // Continues the shard's tally rather than restarting it: the planner's page
+    // and any pages a previous attempt got through are already counted, and
+    // zeroing here made the summary report less than the store actually holds.
+    let shardCards = shard.cards_seen;
 
     try {
       for (let pageNumber = pagesDone + 1; pageNumber <= lastPage; pageNumber += 1) {
@@ -314,9 +368,12 @@ export const enrich = async (
     Math.min(budget.details, 5000),
     context.profile.limits.refreshDetailAfterDays
   );
+  const needed = context.neededSellerFields;
   log(
     `${pending.length} ad page(s) to read` +
-      (context.needsSeller ? ' (seller gate set, so some will need a full load)' : '')
+      (needed.length > 0
+        ? ` (gates need seller ${needed.join(', ')}; ads missing any of those get a full load)`
+        : ' (no seller gate, so one request each)')
   );
 
   for (const ad of pending) {
@@ -331,7 +388,11 @@ export const enrich = async (
         context.scraper.readListingPage(page, ad.url, { hydrated: false })
       );
 
-      if (context.needsSeller && !listing.seller) {
+      // The HTML carries the sales record and the badges but never the join date,
+      // the name or the rating. So the question is not "did we get a seller" but
+      // "did we get the fields this profile's gates will read".
+      const missing = needed.filter(field => listing.seller?.[field] === undefined);
+      if (missing.length > 0) {
         listing = await loadPage(context, budget, page => context.scraper.detailOn(page, ad.url));
         upgraded += 1;
       }

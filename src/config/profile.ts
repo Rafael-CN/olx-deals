@@ -79,6 +79,12 @@ export const PacingSchema = z
      * latency is not the constraint here — the block is.
      */
     concurrency: z.number().min(1).max(8).default(1),
+    /**
+     * Hours of day the run may work in, local time, e.g. "02:00-07:00". A site
+     * under load polices traffic harder than a quiet one, so an overnight sweep is
+     * cheaper for them and safer for us. May wrap midnight.
+     */
+    activeWindow: z.string().optional(),
   })
   .default({});
 
@@ -453,8 +459,12 @@ export const gemHuntPreset = (overrides: {
       { type: 'price-range', allowMissing: false },
       { type: 'defects', tolerate: 'minor' },
       {
+        // Deliberately built only from fields the ad's HTML already carries.
+        // Adding minAccountAgeMonths, minRating or minReviewCount forces a full
+        // page load per ad — measured at roughly sixty requests each against one
+        // for the cheap read — so those are opt-in rather than default.
         type: 'seller',
-        gate: { maxCancelRate: 0.5, minAccountAgeMonths: 1, onUnknown: 'pass' },
+        gate: { maxCancelRate: 0.5, onUnknown: 'pass' },
       },
     ],
     gems: { enabled: true },

@@ -30,6 +30,9 @@ export default [
         Element: 'readonly',
         HTMLElement: 'readonly',
         Node: 'readonly',
+        // Used inside page.evaluate, where the browser's own fetch is the point:
+        // it carries Chrome's TLS handshake, headers and cookie jar.
+        fetch: 'readonly',
       },
     },
     plugins: {

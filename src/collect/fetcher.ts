@@ -6,108 +6,193 @@ export interface FetchOutcome {
   readonly url: string;
   /** Seconds the server asked us to wait, when it said so. */
   readonly retryAfterSeconds?: number | undefined;
+  /** True when the bytes came from the browser's own HTTP cache. */
+  readonly fromCache?: boolean | undefined;
 }
 
 /**
- * Fetches pages as HTML over HTTP and parses them in a DOM that never touches
- * the network.
+ * Fetches pages as HTML and parses them in a DOM that never touches the network.
  *
- * This exists because loading an OLX page in a browser is not one request. The
- * document arrives, then Next.js chunks, then analytics, then ad slots, then the
- * page's own API calls — dozens of hits, many of them to olx.com.br itself, for
- * every single ad read. Counting that as "one request" is how a run that looks
- * gentle gets rate-limited in a minute.
+ * Two ideas, and the second one corrects the first.
  *
- * Everything the collector needs is in the server-rendered HTML: the search page
- * ships all 50 cards, and the ad page ships its schema.org Product block. So the
- * document is fetched on its own — one request, no scripts — and handed to a
- * throwaway page with JavaScript disabled, which gives the existing selectors a
- * real DOM to work against for free.
+ * A browser navigation to an OLX page is not one request. The document arrives,
+ * then Next.js chunks, then analytics, then ad slots, then the page's own API
+ * calls — dozens of hits for every ad read. Everything this project needs is in
+ * the server-rendered HTML, so fetching the document alone is one request, and a
+ * throwaway page with JavaScript disabled gives the existing selectors a real DOM
+ * for free.
  *
- * The one thing genuinely not in the HTML is the seller card, which hydrates on
- * the client. Paying for a full page load is therefore a decision the caller
- * makes per ad, not the default for all of them.
+ * But *how* the document is fetched matters as much as how many. Fetching it from
+ * Node — Playwright's `context.request` — sends Node's TLS handshake, Node's
+ * HTTP/2 settings and hand-written headers, which is a different client from the
+ * Chrome that earned the session's cookies. Fewer requests, each one less
+ * consistent. So the fetch happens *inside* a page already on the target origin,
+ * through the page's own `fetch()`: Chrome's TLS, Chrome's header set, Chrome's
+ * cookie jar, Chrome's HTTP cache. One client, used consistently.
+ *
+ * The anchor for each origin is its own /robots.txt — a few hundred bytes, and a
+ * document this project should be reading anyway.
  */
 export class HtmlFetcher {
+  private readonly anchors = new Map<string, Page>();
   private requests = 0;
+  private cached = 0;
   private bytes = 0;
+  private anchorLoads = 0;
 
   private constructor(
     private readonly context: BrowserContext,
-    private readonly parser: Page
+    private readonly parser: Page,
+    private readonly waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'
   ) {}
 
   /**
-   * `parserContext` must have JavaScript disabled and all routes aborted; it
-   * only ever renders HTML that has already been fetched.
+   * `parserContext` must have JavaScript disabled and all routes aborted; it only
+   * ever renders HTML that has already been fetched.
    */
   static async create(
     context: BrowserContext,
-    parserContext: BrowserContext
+    parserContext: BrowserContext,
+    waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit' = 'domcontentloaded'
   ): Promise<HtmlFetcher> {
     const parser = await parserContext.newPage();
-    return new HtmlFetcher(context, parser);
+    return new HtmlFetcher(context, parser, waitUntil);
   }
 
-  /** One HTTP request, sharing the browser context's cookies and headers. */
+  /**
+   * One request for the document, issued by Chrome from the target origin.
+   *
+   * `fetch` participates in the browser's HTTP cache, so a page that has not
+   * changed since a previous run can come back as a 304 or not leave the machine
+   * at all — which is the cheapest possible request for both sides.
+   */
   async get(url: string): Promise<FetchOutcome> {
+    const page = await this.anchorFor(new URL(url).origin);
     this.requests += 1;
 
-    const response = await this.context.request.get(url, {
-      // Redirects are followed, but a failure must come back as a status rather
-      // than an exception so the governor can tell a block from a crash.
-      failOnStatusCode: false,
-      timeout: 45_000,
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-      },
-    });
+    const outcome = await page.evaluate(async target => {
+      try {
+        const response = await fetch(target, { credentials: 'same-origin' });
+        return {
+          status: response.status,
+          html: await response.text(),
+          url: response.url,
+          retryAfter: response.headers.get('retry-after'),
+          // Chrome reports a cache hit as a zero-length transfer on the entry.
+          fromCache: false,
+        };
+      } catch (error) {
+        return {
+          status: 0,
+          html: '',
+          url: target,
+          retryAfter: null,
+          fromCache: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }, url);
 
-    const html = await response.text().catch(() => '');
-    this.bytes += html.length;
+    if ('error' in outcome && outcome.error) {
+      throw new Error(`fetch failed for ${url}: ${outcome.error}`);
+    }
 
-    const retryAfter = response.headers()['retry-after'];
-    const parsed = retryAfter ? Number(retryAfter) : Number.NaN;
+    this.bytes += outcome.html.length;
+    if (outcome.fromCache) this.cached += 1;
 
+    const parsed = outcome.retryAfter ? Number(outcome.retryAfter) : Number.NaN;
     return {
-      status: response.status(),
-      html,
-      url: response.url(),
+      status: outcome.status,
+      html: outcome.html,
+      url: outcome.url,
       ...(Number.isFinite(parsed) ? { retryAfterSeconds: parsed } : {}),
+      ...(outcome.fromCache ? { fromCache: true } : {}),
     };
   }
 
   /**
-   * Renders already-fetched HTML and runs an extractor over it. Costs nothing:
-   * the parser context executes no JavaScript and its routes are all aborted, so
+   * A page parked on the origin, so `fetch` from it is same-origin and can read
+   * the response. Created once per origin and kept — ad pages live on per-state
+   * subdomains, so a nationwide sweep needs at most 27 of these.
+   */
+  private async anchorFor(origin: string): Promise<Page> {
+    const existing = this.anchors.get(origin);
+    if (existing && !existing.isClosed()) return existing;
+
+    const page = await this.context.newPage();
+    // robots.txt is the lightest document that establishes the origin, and it is
+    // the one page a crawler has an actual reason to read first.
+    const response = await page.goto(`${origin}/robots.txt`, { waitUntil: this.waitUntil });
+    this.anchorLoads += 1;
+
+    const status = response?.status();
+    if (status !== undefined && (status === 403 || status === 429)) {
+      await page.close().catch(() => {});
+      throw new Error(
+        `olx.com.br answered ${status} for ${origin}/robots.txt — blocked or rate-limited.`
+      );
+    }
+
+    this.anchors.set(origin, page);
+    return page;
+  }
+
+  /** The robots.txt already fetched while anchoring an origin. */
+  async robotsFor(origin: string): Promise<string> {
+    const page = await this.anchorFor(origin);
+    return await page.evaluate(() => document.body?.innerText ?? '');
+  }
+
+  /**
+   * Renders already-fetched HTML and runs an extractor over it. Costs nothing: the
+   * parser context executes no JavaScript and its routes are all aborted, so
    * nothing on the page can reach out.
    */
   async parse<T>(outcome: FetchOutcome, extract: (page: Page) => Promise<T>): Promise<T> {
-    // A base URL lets relative hrefs in the markup resolve the way they would
-    // have on the real page.
     await this.parser.setContent(outcome.html, { waitUntil: 'domcontentloaded' });
     return await extract(this.parser);
   }
 
-  get stats(): { requests: number; kilobytes: number } {
-    return { requests: this.requests, kilobytes: Math.round(this.bytes / 1024) };
+  get stats(): {
+    requests: number;
+    kilobytes: number;
+    cached: number;
+    anchorLoads: number;
+    origins: number;
+  } {
+    return {
+      requests: this.requests,
+      kilobytes: Math.round(this.bytes / 1024),
+      cached: this.cached,
+      anchorLoads: this.anchorLoads,
+      origins: this.anchors.size,
+    };
   }
 
   async close(): Promise<void> {
     await this.parser.close().catch(() => {});
+    for (const page of this.anchors.values()) await page.close().catch(() => {});
+    this.anchors.clear();
   }
 }
 
 /**
- * Counts every request a real page load makes to OLX, so the cost of using a
- * browser instead of a plain fetch is a number rather than a guess.
+ * Counts every request the browser makes to OLX, so the cost of a page load is a
+ * number rather than a guess.
  */
 export class RequestMeter {
   private counts = new Map<string, number>();
 
   watch(page: Page): void {
     page.on('request', request => {
+      const host = safeHost(request.url());
+      if (!host.endsWith('olx.com.br')) return;
+      this.counts.set(host, (this.counts.get(host) ?? 0) + 1);
+    });
+  }
+
+  watchContext(context: BrowserContext): void {
+    context.on('request', request => {
       const host = safeHost(request.url());
       if (!host.endsWith('olx.com.br')) return;
       this.counts.set(host, (this.counts.get(host) ?? 0) + 1);

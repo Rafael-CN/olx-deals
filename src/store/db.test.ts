@@ -93,6 +93,15 @@ describe('Store', () => {
     expect(store.pendingShards('run-1').map(s => s.key)).toEqual(['rs|all||']);
   });
 
+  it('exposes a shard running tally, so a resumed sweep continues it', () => {
+    store.saveShards('run-1', [{ key: 'k', totalCount: 300, truncated: false, depth: 0 }]);
+    store.updateShard('run-1', 'k', { pagesDone: 1, cardsSeen: 50 });
+
+    // The planner's page is already counted; a resumed collect must add to this
+    // rather than restart from zero, or the summary undercounts what is on disk.
+    expect(store.pendingShards('run-1')[0]).toMatchObject({ pages_done: 1, cards_seen: 50 });
+  });
+
   it('preserves progress when only the status is patched', () => {
     store.saveShards('run-1', [{ key: 'k', totalCount: 10, truncated: false, depth: 0 }]);
     store.updateShard('run-1', 'k', { pagesDone: 7, cardsSeen: 350 });

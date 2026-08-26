@@ -111,15 +111,32 @@ chunks, then analytics, then the ad slots, then the page's own API calls — doz
 of hits, many to olx.com.br, for every ad read. Charging that as "one request" is
 how a run that looks gentle gets rate-limited in a minute.
 
-So the collector does not open pages. It fetches the HTML over HTTP — one request,
-sharing the browser context's cookies — and renders it in a second context with
-JavaScript disabled and every route aborted, which gives the same selectors a real
-DOM for free. The search page server-renders all fifty cards and the ad page
-server-renders its schema.org block, so this costs nothing in coverage.
+So the collector does not open pages. It fetches the document alone and renders it
+in a second context with JavaScript disabled and every route aborted, which gives
+the same selectors a real DOM for free. The search page server-renders all fifty
+cards and the ad page server-renders its schema.org block, so this costs nothing in
+coverage.
 
-The single thing not in the HTML is the seller card, which hydrates on the client.
-A full page load is therefore spent per ad, and only when a stage will actually
-read the seller. A profile with no seller gate never runs JavaScript at all.
+**And it fetches with Chrome, not with Node.** The fetch happens inside a page
+already parked on the target origin, through the browser's own `fetch()` — Chrome's
+TLS handshake, Chrome's header set, Chrome's cookie jar. Going through Node's HTTP
+stack would send a different client from the one that earned the session's cookies:
+fewer requests, each less coherent. Each origin is anchored on its own
+`/robots.txt`, which is a few hundred bytes and a document a crawler should be
+reading first anyway.
+
+**Which gates you choose decides what the sweep costs.** The ad's HTML carries the
+sales record and the verification badges, but not the seller's name, join date or
+rating — those appear only once the card hydrates. Measured, not assumed:
+
+| Seller gate | Cost per ad |
+| --- | --- |
+| `maxCancelRate`, `minSalesCompleted`, `requireVerified`, `requireChannels` | 1 request |
+| `minAccountAgeMonths`, `minRating`, `minReviewCount` | a full page load |
+
+An ad is upgraded to a page load only when the cheap read came back missing a field
+the configured gates will actually read. A profile with no seller gate never runs
+JavaScript at all.
 
 **A refused page still parses** — it just has no cards on it — so without a check
 it reads as "nothing matched", the one answer a caller cannot tell apart from the
@@ -141,8 +158,14 @@ garimpo hunt --profile perfil.json --gentle
 ```
 
 Roughly 2 rpm, one page at a time, a five-minute sit-down every 60 requests, ten
-minutes of silence at the first refusal. A statewide sweep takes hours. That is
-the trade.
+minutes of silence at the first refusal. A statewide sweep takes hours. That is the
+trade.
+
+`--window 02:00-07:00` confines a run to chosen hours (it may wrap midnight): a
+site under load polices traffic harder than a quiet one. And `garimpo plan` prints
+what the sweep will cost in requests and minutes before any of it is spent, so a
+nationwide run can be turned down before it starts rather than abandoned an hour
+in.
 
 There is no proxy rotation, fingerprint randomisation or challenge solving here,
 and there will not be. Those are evasion rather than good manners, and evasion is

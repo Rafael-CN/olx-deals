@@ -61,6 +61,7 @@ export const CLI_OPTIONS = {
   headed: { type: 'boolean' },
   'no-block-assets': { type: 'boolean' },
   gentle: { type: 'boolean' },
+  window: { type: 'string' },
   force: { type: 'boolean' },
   'pause-every': { type: 'string' },
   'pause-for': { type: 'string' },

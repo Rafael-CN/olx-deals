@@ -9,8 +9,18 @@ import { HtmlFetcher, RequestMeter } from '../collect/fetcher.js';
 import { BlockMemory, describeWait } from '../collect/cooldown.js';
 import { isDisallowed, parseRobots, rpmCeilingFor } from '../collect/robots.js';
 import { planShards } from '../collect/shard.js';
-import { collect, enrich, makeProbe, newBudget, RunnerContext } from '../collect/runner.js';
+import { describeEstimate, estimateCost } from '../collect/estimate.js';
+import {
+  collect,
+  enrich,
+  flushProbedPages,
+  makeProbe,
+  newBudget,
+  ProbedPage,
+  RunnerContext,
+} from '../collect/runner.js';
 import { Candidate, triage, Verdict } from '../triage/stages.js';
+import { requiredSellerFields } from '../triage/seller.js';
 import { rankGems } from '../triage/gems.js';
 import { SellerInfo } from '../core/types.js';
 import { CliValues, buildProfile, parseCommandLine, profileTemplate } from './options.js';
@@ -62,6 +72,7 @@ Budget and pacing
   --rpm 6                   starting request rate; it adapts from there
   --max-rpm 15, --cooldown 300, --concurrency 1
   --pause-every 120 --pause-for 180   long idle gaps between bursts
+  --window 02:00-07:00      only work during these hours (may wrap midnight)
   --refresh-after-days 7    re-read an ad page only if this stale
   --force                   start even though a previous run was blocked
 
@@ -71,6 +82,17 @@ Output
   --data-dir .garimpo, --channel chrome, --headed, --no-block-assets
 `;
 
+const EOL = String.fromCharCode(10);
+
+/** Says out loud when a run is sitting out its closed hours, rather than hanging. */
+const withWindowLogging = (governor: RateGovernor, values: CliValues): RateGovernor => {
+  governor.onWindowClosed = waitMs => {
+    if (values.quiet !== true) {
+      log(`outside the working window — sleeping ${describeWait(waitMs)} until it opens`);
+    }
+  };
+  return governor;
+};
 const log = (message: string) => process.stderr.write(`${message}\n`);
 
 const runId = (profile: Profile, now: Date): string =>
@@ -93,18 +115,21 @@ const openContext = async (
   });
 
   const meter = new RequestMeter();
+  meter.watchContext(session.httpContext);
   const fetcher = await HtmlFetcher.create(session.httpContext, session.parserContext);
 
   return {
     scraper: new OLXBRScraper(session.playwrightBrowser),
     session,
-    governor: new RateGovernor(profile.pacing),
+    governor: withWindowLogging(new RateGovernor(profile.pacing), values),
     fetcher,
     meter,
     blockMemory: new BlockMemory(profile.dataDir),
-    // No seller stage means no ad ever justifies running JavaScript, and the run
-    // costs exactly one request per ad.
-    needsSeller: profile.stages.some(stage => stage.type === 'seller'),
+    // Only the fields the gates actually read; everything else stays on the cheap
+    // path. See requiredSellerFields.
+    neededSellerFields: profile.stages.flatMap(stage =>
+      stage.type === 'seller' ? requiredSellerFields(stage.gate) : []
+    ),
     store,
     profile,
     log: values.quiet === true ? () => {} : log,
@@ -364,8 +389,9 @@ const main = async (): Promise<number> => {
       // than silently obeyed or silently ignored, because that is the operator's
       // call to make knowingly.
       try {
-        const robotsTxt = await context.fetcher.get('https://www.olx.com.br/robots.txt');
-        const rules = parseRobots(robotsTxt.html);
+        // Free: the fetcher anchors each origin on its robots.txt anyway, so this
+        // reads a document already fetched rather than asking for another.
+        const rules = parseRobots(await context.fetcher.robotsFor('https://www.olx.com.br'));
         if (rules.available) {
           const ceiling = rpmCeilingFor(rules);
           if (ceiling !== undefined) {
@@ -389,26 +415,50 @@ const main = async (): Promise<number> => {
       }
 
       if (command === 'plan' || command === 'hunt') {
-        context.log(`planning "${profile.query}" across ${profile.states.length || 27} state(s)`);
-        const plan = await planShards(profile, makeProbe(context, budget), profile.limits);
-        store.saveShards(id, plan.shards);
-        notes.push(...plan.notes);
-
-        context.log(
-          `${plan.shards.length} slice(s) after ${plan.probes} probe(s); ` +
-            `up to ${plan.reachableAds} ads reachable` +
-            (plan.truncatedShards.length > 0
-              ? `; ${plan.truncatedShards.length} slice(s) too big to page fully`
-              : '')
-        );
-        for (const note of plan.notes) context.log(`  note: ${note}`);
-
-        if (command === 'plan') {
-          store.finishRun(id, 'planned', new Date().toISOString(), notes);
-          process.stdout.write(
-            `${JSON.stringify({ run: id, shards: plan.shards, notes: plan.notes }, null, 2)}\n`
+        // A resumed run already knows its slices; re-probing them would spend a
+        // request each to learn what is already on disk.
+        const known = store.pendingShards(id);
+        if (known.length > 0 && existing) {
+          context.log(`resuming: ${known.length} slice(s) still pending, no re-probing needed`);
+        } else {
+          context.log(`planning "${profile.query}" across ${profile.states.length || 27} state(s)`);
+          const harvest = new Map<string, ProbedPage>();
+          const plan = await planShards(
+            profile,
+            makeProbe(context, budget, harvest),
+            profile.limits
           );
-          return 0;
+          store.saveShards(id, plan.shards);
+          notes.push(...plan.notes);
+
+          // The planner had to fetch page one of every slice to read its count;
+          // keeping those pages is one request saved per slice.
+          const flushed = flushProbedPages(context, id, harvest);
+
+          context.log(
+            `${plan.shards.length} slice(s) after ${plan.probes} probe(s); ` +
+              `up to ${plan.reachableAds} ads reachable; kept ${flushed.pages} page(s) the ` +
+              `probes already fetched (${flushed.newAds} ads)` +
+              (plan.truncatedShards.length > 0
+                ? `; ${plan.truncatedShards.length} slice(s) too big to page fully`
+                : '')
+          );
+          for (const note of plan.notes) context.log(`  note: ${note}`);
+
+          const estimate = estimateCost(plan.shards, profile.limits, profile.pacing, plan.probes);
+          context.log(`estimated cost: ${describeEstimate(estimate)}`);
+
+          if (command === 'plan') {
+            store.finishRun(id, 'planned', new Date().toISOString(), notes);
+            process.stdout.write(
+              JSON.stringify(
+                { run: id, estimate, shards: plan.shards, notes: plan.notes },
+                null,
+                2
+              ) + EOL
+            );
+            return 0;
+          }
         }
       }
 
@@ -427,7 +477,8 @@ const main = async (): Promise<number> => {
 
         const outcome = await enrich(context, id, budget);
         context.log(
-          `read ${outcome.fetched} ad page(s), ${outcome.failed} unreadable` +
+          `read ${outcome.fetched} ad page(s), ${outcome.upgraded} needed a full load, ` +
+            `${outcome.failed} unreadable` +
             (outcome.halted ? ` — stopped: ${outcome.halted}` : '')
         );
         if (outcome.halted) notes.push(`enrichment stopped: ${outcome.halted}`);
@@ -453,10 +504,14 @@ const main = async (): Promise<number> => {
 
       const stats = context.governor.stats;
       const http = context.fetcher.stats;
+      const ads = store.countRunAds(id);
       context.log(
-        `${http.requests} HTTP fetch(es) (${http.kilobytes} KB) + ${context.meter.total} request(s) ` +
-          `from page loads; blocks: ${stats.blocks}, errors: ${stats.errors}, ` +
-          `ending rate ${stats.currentRpm} rpm, ` +
+        `${http.requests} document fetch(es) (${http.kilobytes} KB) over ${http.origins} origin(s), ` +
+          `${http.anchorLoads} anchor load(s); ${context.meter.total} request(s) reached ` +
+          `olx.com.br in total for ${ads} ad(s) collected`
+      );
+      context.log(
+        `blocks: ${stats.blocks}, errors: ${stats.errors}, ending rate ${stats.currentRpm} rpm, ` +
           `${Math.round((stats.waitedMs + stats.cooldownMs) / 1000)}s spent waiting`
       );
 

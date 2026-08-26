@@ -237,11 +237,12 @@ export class Store {
     max_price: number | null;
     total_count: number;
     pages_done: number;
+    cards_seen: number;
     status: string;
   }> {
     return this.db
       .prepare(
-        `SELECT key, state, category, min_price, max_price, total_count, pages_done, status
+        `SELECT key, state, category, min_price, max_price, total_count, pages_done, cards_seen, status
          FROM shards WHERE run_id = ? AND status IN ('pending', 'running', 'truncated')
          ORDER BY total_count DESC`
       )
