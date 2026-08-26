@@ -1,7 +1,7 @@
 import { Browser, Page } from 'playwright';
 import { NonRetryableError } from '../base/scraper.interface.js';
 import { BaseOlxScraper, DetailReadOptions } from './base-olx.scraper.js';
-import { Listing, ListingId, SearchFilters } from '../../core/types.js';
+import { Listing, ListingId, SearchFilters, SellerInfo } from '../../core/types.js';
 import { formatBrl, parseCardDate, parseSellerFromLines, stripHtml } from './br-parsers.js';
 
 /**
@@ -183,6 +183,30 @@ export class OLXBRScraper extends BaseOlxScraper {
       const gtmDetail = liveDetail ?? { adDate: adDateFromMarkup() };
 
       /**
+       * The seller's name, from the ad payload embedded in the markup.
+       *
+       * Worth reading separately because the seller card it normally comes from
+       * hydrates on the client, so an HTML-only read would otherwise lose it. The
+       * payload is JSON inside a script, sometimes doubly escaped, hence the
+       * optional backslashes.
+       *
+       * The join date and the rating are genuinely not here — checked against the
+       * markup and against the payload's own `user` object, which carries an id, a
+       * name and settings and nothing dated.
+       */
+      const sellerNameFromMarkup = (): string | undefined => {
+        for (const script of Array.from(document.scripts)) {
+          // String.raw so the backslashes survive: this payload is JSON inside a
+          // script and is sometimes escaped a second time, so the quote around the
+          // value may or may not be preceded by one.
+          const pattern = new RegExp(String.raw`sellerName\\?"\s*:\s*\\?"([^"\\]{2,80})`);
+          const match = script.textContent?.match(pattern);
+          if (match?.[1]) return match[1];
+        }
+        return undefined;
+      };
+
+      /**
        * The "Detalhes" block pairs a `typo-overline` label with its value in the
        * next sibling. Those typography classes come from the design system, not
        * from the build, so they outlive a deploy.
@@ -235,6 +259,7 @@ export class OLXBRScraper extends BaseOlxScraper {
         // The seller card is parsed out of this in Node — see parseSellerFromLines.
         bodyLines: linesOf(document.body),
         publishedAtUnix: typeof gtmDetail?.adDate === 'number' ? gtmDetail.adDate : undefined,
+        sellerNameFromMarkup: sellerNameFromMarkup(),
       };
     });
 
@@ -258,7 +283,7 @@ export class OLXBRScraper extends BaseOlxScraper {
       attributes: Object.keys(raw.attributes).length > 0 ? raw.attributes : undefined,
       publishedAt:
         raw.publishedAtUnix !== undefined ? new Date(raw.publishedAtUnix * 1000) : undefined,
-      seller: parseSellerFromLines(raw.bodyLines),
+      seller: mergeSeller(parseSellerFromLines(raw.bodyLines), raw.sellerNameFromMarkup),
     };
   }
 
@@ -267,3 +292,16 @@ export class OLXBRScraper extends BaseOlxScraper {
     return parseCardDate(text, new Date());
   }
 }
+
+/**
+ * Folds in a name read from the markup, for the HTML-only path where the seller
+ * card never rendered. Never overrides what the card itself said.
+ */
+export const mergeSeller = (
+  fromCard: SellerInfo | undefined,
+  nameFromMarkup: string | undefined
+): SellerInfo | undefined => {
+  if (!nameFromMarkup) return fromCard;
+  if (!fromCard) return { name: nameFromMarkup };
+  return fromCard.name ? fromCard : { ...fromCard, name: nameFromMarkup };
+};

@@ -78,6 +78,9 @@ const detailHtml = `
       offers: { '@type': 'Offer', priceCurrency: 'BRL', price: '1000' },
     })}
   </script>
+  <script id="ad-payload">
+    window.__unused = {"adDetail":{"listId":1528710904,"sellerName":"Marcio Pereira","price":"1999"}};
+  </script>
   <script id="datalayer">
     window.dataLayer = [{"page":{"pageType":"ad_detail","detail":{"adDate":1787358385,"list_id":1528464732,"price":"1000"}}}];
   </script>
@@ -245,14 +248,19 @@ describe('HTTP-only extraction', () => {
     expect(listing.publishedAt?.toISOString()).toBe(new Date(1787358385 * 1000).toISOString());
   });
 
-  it('leaves the seller unset rather than waiting for a card that will never hydrate', async () => {
+  it('recovers the seller name from the payload, since the card never hydrates', async () => {
     await page.setContent(detailHtml);
     const started = Date.now();
     const listing = await scraper.readListingPage(page, 'https://x.olx.com.br/a-1528464732', {
       hydrated: false,
     });
 
-    expect(listing.seller).toBeUndefined();
+    // The name is in the embedded ad payload even though the seller card is not
+    // rendered; the join date and rating genuinely are not, so they stay unset and
+    // a gate that needs them is what triggers a full page load.
+    expect(listing.seller?.name).toBe('Marcio Pereira');
+    expect(listing.seller?.memberSince).toBeUndefined();
+    expect(listing.seller?.rating).toBeUndefined();
     // Had it waited for hydration, this would have cost the 10s timeout.
     expect(Date.now() - started).toBeLessThan(5000);
   });

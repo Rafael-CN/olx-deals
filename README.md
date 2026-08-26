@@ -132,7 +132,12 @@ rating — those appear only once the card hydrates. Measured, not assumed:
 | Seller gate | Cost per ad |
 | --- | --- |
 | `maxCancelRate`, `minSalesCompleted`, `requireVerified`, `requireChannels` | 1 request |
-| `minAccountAgeMonths`, `minRating`, `minReviewCount` | a full page load |
+| `minAccountAgeMonths`, `minRating`, `minReviewCount` | ~60 requests |
+
+A hydrated ad page was measured at roughly sixty requests to olx.com.br — the
+document, the Next.js chunks, analytics, ad slots and the page's own API calls.
+The seller's *name* comes free from the payload embedded in the markup; the join
+date and rating are not in the document at all, arriving from a client-side call.
 
 An ad is upgraded to a page load only when the cheap read came back missing a field
 the configured gates will actually read. A profile with no seller gate never runs

@@ -45,7 +45,12 @@ Foram todos medidos contra o site, não deduzidos.
      | Portão de vendedor | Custo |
      |---|---|
      | `maxCancelRate`, `minSalesCompleted`, `requireVerified`, `requireChannels` | 1 requisição por anúncio |
-     | `minAccountAgeMonths`, `minRating`, `minReviewCount` | página completa por anúncio |
+     | `minAccountAgeMonths`, `minRating`, `minReviewCount` | **~60 requisições** por anúncio |
+
+     Medido: uma página hidratada faz ~60 hits no olx.com.br (documento, chunks do
+     Next, analytics, slots, APIs da página). O nome do vendedor sai de graça do
+     payload embutido; data de entrada e nota não estão em lugar nenhum do
+     documento — vêm de chamada client-side.
 
      Se a prioridade é não tomar bloqueio, monte o portão só com os de cima.
      Medido, não deduzido.

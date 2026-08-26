@@ -30,12 +30,17 @@ export const requiredSellerFields = (gate: SellerGate): Array<keyof SellerInfo> 
   return [...needed];
 };
 
-/** Fields that never survive an HTML-only read, so wanting them implies a page load. */
+/**
+ * Fields that never survive an HTML-only read, so wanting them implies a page
+ * load. Verified against a saved ad page: the name is in the embedded payload and
+ * the sales record and badges are in the markup, but the join date and the rating
+ * arrive from a client-side call and are nowhere in the document.
+ */
 export const SELLER_FIELDS_NEEDING_HYDRATION: ReadonlyArray<keyof SellerInfo> = [
-  'name',
   'memberSince',
   'rating',
   'reviewCount',
+  'dispatchDays',
   'online',
 ];
 
