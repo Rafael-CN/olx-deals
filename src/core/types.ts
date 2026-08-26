@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 export type Result<T, E = Error> = { success: true; data: T } | { success: false; error: E };
 
 export type Brand<T, K> = T & { readonly __brand: K };
@@ -7,16 +5,10 @@ export type Brand<T, K> = T & { readonly __brand: K };
 export type ListingId = Brand<string, 'ListingId'>;
 export type CategoryId = Brand<string, 'CategoryId'>;
 export type LocationId = Brand<string, 'LocationId'>;
-export type OlxDomain = 'olx.pt' | 'olx.pl' | 'olx.bg' | 'olx.ro' | 'olx.ua' | 'olx.com.br';
+/** Only Brazil is supported: the sharding, the URL grammar and every parser here are its own. */
+export type OlxDomain = 'olx.com.br';
 
 export type SortBy = 'relevance' | 'date' | 'price-asc' | 'price-desc';
-
-export interface MCPTool<TArgs = unknown, TResult = unknown> {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: z.ZodSchema<TArgs>;
-  execute(args: TArgs, signal?: AbortSignal): Promise<Result<TResult>>;
-}
 
 export interface ScraperConfig {
   readonly baseUrl: string;
@@ -136,6 +128,16 @@ export interface SellerInfo {
   readonly phone?: string | undefined;
   readonly verified?: boolean | undefined;
   readonly memberSince?: Date | undefined;
+  /** 0-5, as shown on the seller card ("5,0"). */
+  readonly rating?: number | undefined;
+  readonly reviewCount?: number | undefined;
+  readonly salesCompleted?: number | undefined;
+  readonly salesCancelled?: number | undefined;
+  /** "Tempo médio de despacho", in days. */
+  readonly dispatchDays?: number | undefined;
+  /** Which contact channels OLX confirmed: "E-mail", "Telefone", "Facebook". */
+  readonly verifiedChannels?: readonly string[] | undefined;
+  readonly online?: boolean | undefined;
 }
 
 export interface SearchFilters {

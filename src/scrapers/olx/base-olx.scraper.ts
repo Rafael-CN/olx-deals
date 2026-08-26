@@ -57,7 +57,19 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
   }
 
   private async performSearch(filters: SearchFilters, signal?: AbortSignal): Promise<SearchResult> {
-    return await this.withPage(async page => {
+    return await this.withPage(page => this.searchOn(page, filters, signal), signal);
+  }
+
+  /**
+   * Searches on a page the caller owns.
+   *
+   * A bulk run needs this: `scrape` opens a fresh page per call, which throws
+   * away the cookies OLX's edge hands out — including the clearance one — and a
+   * few thousand cold pages is a reliable way to get blocked. A long-lived
+   * context reuses them.
+   */
+  async searchOn(page: Page, filters: SearchFilters, signal?: AbortSignal): Promise<SearchResult> {
+    {
       const searchUrl = this.buildSearchUrl(filters);
 
       const response = await page.goto(searchUrl, { waitUntil: this.waitUntil });
@@ -93,7 +105,7 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
         listings,
         ...pagination,
       };
-    }, signal);
+    }
   }
 
   protected buildSearchUrl(filters: SearchFilters): string {
@@ -180,7 +192,8 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
     page: Page,
     limit?: number
   ): Promise<{ listings: Listing[]; cardCount: number }> {
-    const { listingCard, title, price, location, image, link } = this.domainConfig.selectors.search;
+    const { listingCard, title, price, location, image, link, publishDate } =
+      this.domainConfig.selectors.search;
 
     // One round-trip for the whole page. Reading each field per card over
     // separate $eval calls cost ~5 calls x ~50 cards of browser IPC per search.
@@ -230,12 +243,13 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
             title: readText(selectors.title),
             price: readPrice(),
             location: readText(selectors.location),
+            publishedText: readText(selectors.publishDate),
             imageUrl:
               imageElement?.getAttribute('src') || imageElement?.getAttribute('data-src') || '',
             relativeUrl: card.querySelector(selectors.link)?.getAttribute('href') || '',
           };
         }),
-      { title, price, location, image, link }
+      { title, price, location, image, link, publishDate }
     );
 
     const listings: Listing[] = [];
@@ -262,6 +276,7 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
         location: card.location || undefined,
         imageUrl: card.imageUrl || undefined,
         url,
+        publishedAt: this.parsePublishedAt(card.publishedText),
       });
 
       if (limit !== undefined && listings.length >= limit) break;
@@ -315,6 +330,15 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       totalPages: Math.max(totalPages, 1),
       hasNextPage,
     };
+  }
+
+  /**
+   * Cards state their date in the site's own words ("Ontem, 12:58"), which only
+   * the domain knows how to read. Domains that have not taught this leave the
+   * field unset rather than guess.
+   */
+  protected parsePublishedAt(_text: string): Date | undefined {
+    return undefined;
   }
 
   /** Every domain encodes the id the same way: .../slug-ID<id>.html */
@@ -373,6 +397,27 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
 
       return await this.extractListingDetail(page, listingId, finalUrl);
     }, signal);
+  }
+
+  /**
+   * Reads a listing straight from its URL on a page the caller owns. The
+   * enricher already holds the URL from the card that produced it, so the
+   * id-to-URL search `getListingDetails` falls back on is pure waste there.
+   */
+  async detailOn(
+    page: Page,
+    url: string,
+    listingId?: ListingId,
+    signal?: AbortSignal
+  ): Promise<Listing> {
+    const response = await page.goto(url, { waitUntil: this.waitUntil });
+    this.assertServedByOlx(response, url);
+
+    if (signal?.aborted) {
+      throw new Error('Operation cancelled');
+    }
+
+    return await this.extractListingDetail(page, listingId ?? this.extractListingId(url), url);
   }
 
   /**

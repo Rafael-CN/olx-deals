@@ -1,7 +1,8 @@
 import { Browser, Page } from 'playwright';
 import { NonRetryableError } from '../base/scraper.interface.js';
 import { BaseOlxScraper } from './base-olx.scraper.js';
-import { Listing, ListingId, SearchFilters, SellerInfo } from '../../core/types.js';
+import { Listing, ListingId, SearchFilters } from '../../core/types.js';
+import { formatBrl, parseCardDate, parseSellerFromLines, stripHtml } from './br-parsers.js';
 
 /**
  * OLX Brazil. Despite the shared brand this is not the European OLX
@@ -199,25 +200,6 @@ export class OLXBRScraper extends BaseOlxScraper {
         return undefined;
       };
 
-      /**
-       * The seller card has no heading, so it is found through the one line that
-       * always appears in it. The name is the card's first line.
-       */
-      const readSeller = (): { name?: string; since?: string } | undefined => {
-        const since = leafWith(text => /^Na OLX desde/.test(text));
-        if (!since) return undefined;
-
-        const sinceText = since.textContent?.trim() || '';
-        let node: Element | null = since.parentElement;
-        for (let depth = 0; depth < 8 && node; depth += 1, node = node.parentElement) {
-          const lines = linesOf(node);
-          if (lines.length >= 3 && lines[0] && lines[0] !== sinceText) {
-            return { name: lines[0], since: sinceText };
-          }
-        }
-        return { since: sinceText };
-      };
-
       const images = (product?.image ?? [])
         .map(entry => (typeof entry === 'string' ? entry : entry?.contentUrl))
         .filter((value): value is string => Boolean(value));
@@ -230,9 +212,8 @@ export class OLXBRScraper extends BaseOlxScraper {
         images,
         attributes,
         location: sectionUnder('Localização'),
-        seller: readSeller(),
-        // The badge is only rendered once OLX has confirmed a contact channel.
-        verified: Boolean(leafWith(text => text === 'Informações verificadas')),
+        // The seller card is parsed out of this in Node — see parseSellerFromLines.
+        bodyLines: linesOf(document.body),
         publishedAtUnix: typeof gtmDetail?.adDate === 'number' ? gtmDetail.adDate : undefined,
       };
     });
@@ -257,72 +238,12 @@ export class OLXBRScraper extends BaseOlxScraper {
       attributes: Object.keys(raw.attributes).length > 0 ? raw.attributes : undefined,
       publishedAt:
         raw.publishedAtUnix !== undefined ? new Date(raw.publishedAtUnix * 1000) : undefined,
-      seller: buildSeller(raw.seller, raw.verified),
+      seller: parseSellerFromLines(raw.bodyLines),
     };
   }
+
+  /** Cards date themselves relatively: "Hoje, 21:26", "Ontem, 12:58", "21/08". */
+  protected override parsePublishedAt(text: string): Date | undefined {
+    return parseCardDate(text, new Date());
+  }
 }
-
-/**
- * JSON-LD states the price as a bare amount ("1000"). Rendering it the way the
- * site does keeps it readable, and integral amounts stay free of the ",00" that
- * OLX itself never shows.
- */
-const formatBrl = (amount: string): string | undefined => {
-  const value = Number(amount);
-  if (!amount || Number.isNaN(value)) return undefined;
-
-  const formatted = new Intl.NumberFormat('pt-BR', {
-    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-
-  return `R$ ${formatted}`;
-};
-
-/** Descriptions arrive with their line breaks still encoded as <br> tags. */
-const stripHtml = (html: string): string | undefined => {
-  const text = html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .trim();
-  return text || undefined;
-};
-
-const MONTHS_PT_BR = [
-  'janeiro',
-  'fevereiro',
-  'março',
-  'abril',
-  'maio',
-  'junho',
-  'julho',
-  'agosto',
-  'setembro',
-  'outubro',
-  'novembro',
-  'dezembro',
-];
-
-/**
- * "Na OLX desde agosto de 2024" is the only form the site renders, and it names
- * no day — the first of the month is the most precise reading available.
- */
-const parseMemberSince = (text: string): Date | undefined => {
-  const match = text.match(/desde\s+(\p{L}+)\s+de\s+(\d{4})/u);
-  if (!match?.[1] || !match[2]) return undefined;
-
-  const month = MONTHS_PT_BR.indexOf(match[1].toLowerCase());
-  if (month < 0) return undefined;
-
-  return new Date(Date.UTC(Number(match[2]), month, 1));
-};
-
-const buildSeller = (
-  raw: { name?: string; since?: string } | undefined,
-  verified: boolean
-): SellerInfo | undefined => {
-  const memberSince = raw?.since ? parseMemberSince(raw.since) : undefined;
-  if (!raw?.name && !memberSince && !verified) return undefined;
-
-  return { name: raw?.name, verified, memberSince };
-};

@@ -87,3 +87,10 @@ CLAUDE.md
 .claude.md
 **/claude.md
 **/CLAUDE.md
+
+# Collected corpora and cached browser state
+.garimpo/
+.garimpo-*/
+*.db
+*.db-wal
+*.db-shm

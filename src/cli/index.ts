@@ -1,0 +1,427 @@
+#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+import { Profile } from '../config/profile.js';
+import { OLXBRScraper } from '../scrapers/olx/olx-br.scraper.js';
+import { Store, StoredAd, StoredDetail } from '../store/db.js';
+import { BrowserSession } from '../collect/session.js';
+import { RateGovernor, CollectionHalted } from '../collect/governor.js';
+import { planShards } from '../collect/shard.js';
+import { collect, enrich, makeProbe, newBudget, RunnerContext } from '../collect/runner.js';
+import { Candidate, triage, Verdict } from '../triage/stages.js';
+import { rankGems } from '../triage/gems.js';
+import { SellerInfo } from '../core/types.js';
+import { CliValues, buildProfile, parseCommandLine, profileTemplate } from './options.js';
+
+const HELP = `
+garimpo — bulk collection and triage of olx.com.br classified ads
+
+Usage: garimpo <command> [options]
+
+Commands
+  hunt        plan, collect, triage, enrich, re-triage and rank in one pass
+  plan        probe the search and work out how to slice it (no collection)
+  collect     sweep the planned slices for search cards
+  triage      apply the profile's stages to what has been collected
+  enrich      read the ad pages of everything that passed card triage
+  gems        rank survivors against the going rate for the product
+  report      print a run's funnel, prices and top finds
+  runs        list stored runs
+  template    print a fully populated profile JSON to edit
+
+Profile
+  --profile <path>          JSON profile; every flag below overrides it
+  --name, --query
+  --states sp,rj            UFs to sweep (default: all 27)
+  --categories celulares    OLX category slug paths
+  --min-price, --max-price
+
+Matching and triage
+  --require 's\\s*22,ultra'  every pattern must appear in the title
+  --reject 'capa,s23'        any match excludes the ad
+  --tolerate none|minor|major        worst damage still allowed
+  --condition 'Novo,Usado - Bom'     allowed values of OLX's "Condição"
+  --max-age-days, --min-photos
+  --seller-min-rating, --seller-min-sales, --seller-max-cancel-rate
+  --seller-min-age-months, --seller-require-verified
+  --seller-unknown pass|fail         what to do when the seller card is empty
+
+Gems
+  --gems / --no-gems
+  --min-discount 0.3        minimum discount against the clean median
+  --min-z 1.5               distance below the median, in MAD
+  --alert-score 0.7         score at which a find is called a gem
+  --min-reference 12        comparables required before judging anything
+
+Budget and pacing
+  --max-cards, --max-details, --max-requests, --max-shards, --max-minutes
+  --rpm 12                  starting request rate; it adapts from there
+  --max-rpm 40, --cooldown 120, --concurrency 2
+
+Output
+  --run <id>                act on a specific run (default: the latest)
+  --top 20, --json, --quiet
+  --data-dir .garimpo, --channel chrome, --headed, --no-block-assets
+`;
+
+const log = (message: string) => process.stderr.write(`${message}\n`);
+
+const runId = (profile: Profile, now: Date): string =>
+  `${profile.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${now.toISOString().replace(/[:.]/g, '').slice(0, 15)}`;
+
+const openContext = async (
+  profile: Profile,
+  values: CliValues,
+  store: Store
+): Promise<RunnerContext> => {
+  const session = await BrowserSession.open({
+    dataDir: profile.dataDir,
+    pages: profile.pacing.concurrency,
+    headless: values.headed !== true,
+    channel: values.channel ? String(values.channel) : undefined,
+    blockAssets: values['no-block-assets'] !== true,
+  });
+
+  return {
+    scraper: new OLXBRScraper(session.playwrightBrowser),
+    session,
+    governor: new RateGovernor(profile.pacing),
+    store,
+    profile,
+    log: values.quiet === true ? () => {} : log,
+  };
+};
+
+/** Rows from the store, in the shape the triage stages expect. */
+const toCandidate = (row: StoredAd & Partial<StoredDetail>, enriched: boolean): Candidate => ({
+  id: row.id,
+  title: row.title,
+  url: row.url,
+  price: row.price ?? undefined,
+  location: row.location ?? undefined,
+  imageCount: enriched ? (row.image_count ?? 0) : row.image_url ? 1 : 0,
+  publishedAt: row.published_at ? new Date(row.published_at) : undefined,
+  description: row.description ?? undefined,
+  attributes: row.attributes_json
+    ? (JSON.parse(row.attributes_json) as Record<string, string>)
+    : undefined,
+  seller: parseSeller(row.seller_json),
+  enriched,
+});
+
+const parseSeller = (json: string | null | undefined): SellerInfo | undefined => {
+  if (!json) return undefined;
+  const raw = JSON.parse(json) as Record<string, unknown>;
+  return {
+    ...raw,
+    memberSince: raw['memberSince'] ? new Date(String(raw['memberSince'])) : undefined,
+  } as SellerInfo;
+};
+
+const runTriage = (
+  store: Store,
+  id: string,
+  profile: Profile,
+  phase: 'card' | 'detail'
+): Verdict[] => {
+  const now = new Date();
+  const rows: Array<StoredAd & Partial<StoredDetail>> =
+    phase === 'card' ? store.runAds(id) : store.detailsFor(id);
+
+  const verdicts = rows.map(row =>
+    triage(toCandidate(row, phase === 'detail'), profile.stages, now)
+  );
+  store.saveVerdicts(id, phase, verdicts);
+  return verdicts;
+};
+
+const runGems = (store: Store, id: string, profile: Profile) => {
+  const rows = store.detailsFor(id);
+  const now = new Date();
+
+  const entries = rows.map(row => {
+    const candidate = toCandidate(row, true);
+    const verdict = triage(candidate, profile.stages, now);
+    return { candidate, severity: verdict.severity, clean: verdict.passed };
+  });
+
+  const { reference, assessments } = rankGems(entries, profile.gems, now);
+
+  store.saveGems(
+    id,
+    assessments.map(assessment => ({
+      adId: assessment.adId,
+      score: assessment.score,
+      discountPct: assessment.discountPct,
+      robustZ: assessment.robustZ,
+      median: reference.median,
+      referenceSize: reference.size,
+      verdict: assessment.verdict,
+      reasons: assessment.reasons,
+    }))
+  );
+
+  return { reference, assessments, cleanCount: entries.filter(entry => entry.clean).length };
+};
+
+const money = (value: number | null | undefined): string =>
+  value === null || value === undefined ? '—' : `R$ ${value.toLocaleString('pt-BR')}`;
+
+const report = (store: Store, id: string, top: number, asJson: boolean): void => {
+  const funnel = store.funnel(id);
+  const prices = store.priceStats(id);
+  const shards = store.shardSummary(id);
+  const gems = store.topGems(id, top);
+  const cardRejects = store.rejectionReasons(id, 'card', 8);
+  const detailRejects = store.rejectionReasons(id, 'detail', 8);
+  const totalAds = store.countRunAds(id);
+
+  if (asJson) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          run: id,
+          totalAds,
+          shards,
+          prices,
+          funnel,
+          rejections: { card: cardRejects, detail: detailRejects },
+          gems: gems.map(gem => ({ ...gem, reasons: JSON.parse(String(gem['reasons_json'])) })),
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
+  const out = (line: string) => process.stdout.write(`${line}\n`);
+  out(`\nRun ${id}`);
+  out(`  ads collected: ${totalAds}`);
+  out(
+    `  price range: ${money(prices['min'] as number)} – ${money(prices['max'] as number)} ` +
+      `(${prices['n']} priced)`
+  );
+  out(`  shards: ${shards.map(s => `${s.status}=${s.n}`).join(' ')}`);
+
+  if (funnel.length > 0) {
+    out('\n  triage funnel (ads dropped per stage)');
+    for (const stage of funnel) {
+      out(
+        `    ${stage.stage.padEnd(16)} passed ${String(stage.passed).padStart(5)}  failed ${stage.failed}`
+      );
+    }
+  }
+
+  const showRejects = (label: string, rows: Array<Record<string, unknown>>) => {
+    if (rows.length === 0) return;
+    out(`\n  why ads were dropped (${label})`);
+    for (const row of rows) {
+      out(
+        `    ${String(row['n']).padStart(5)}x  ${row['stage']}: ${String(row['reason'] ?? '').slice(0, 90)}`
+      );
+    }
+  };
+  showRejects('cards', cardRejects);
+  showRejects('details', detailRejects);
+
+  if (gems.length > 0) {
+    out(`\n  top finds`);
+    for (const gem of gems) {
+      const reasons = JSON.parse(String(gem['reasons_json'])) as string[];
+      out(
+        `\n    [${String(gem['verdict']).toUpperCase()} ${Number(gem['score']).toFixed(2)}] ` +
+          `${money(gem['price'] as number)} — ${String(gem['title']).slice(0, 62)}`
+      );
+      out(`      ${gem['location'] ?? ''}  ${gem['url']}`);
+      for (const reason of reasons) out(`      · ${reason}`);
+    }
+  }
+  out('');
+};
+
+const main = async (): Promise<number> => {
+  const { command, values } = parseCommandLine(process.argv.slice(2));
+
+  if (values.help === true || command === 'help') {
+    process.stdout.write(`${HELP}\n`);
+    return 0;
+  }
+
+  if (command === 'template') {
+    process.stdout.write(`${JSON.stringify(profileTemplate(), null, 2)}\n`);
+    return 0;
+  }
+
+  // Commands that only read the store must not need a query: `report` and `runs`
+  // are how you look at a finished sweep, and demanding a search term to do that
+  // would be nonsense.
+  const dataDir = values['data-dir'] ? String(values['data-dir']) : '.garimpo';
+  const readOnly = command === 'runs' || command === 'report';
+  const profile = readOnly ? undefined : buildProfile(values);
+  const store = new Store(profile?.dataDir ?? dataDir);
+
+  try {
+    if (command === 'runs') {
+      const rows = store.listRuns(Number(values.top ?? 20));
+      process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+      return 0;
+    }
+
+    const existing = values.run ? String(values.run) : undefined;
+
+    if (command === 'report') {
+      const id = existing ?? store.latestRunId();
+      if (!id) {
+        log('no runs stored yet');
+        return 1;
+      }
+      report(store, id, Number(values.top ?? 15), values.json === true);
+      return 0;
+    }
+
+    if (command === 'triage' || command === 'gems') {
+      const id = existing ?? store.latestRunId();
+      if (!id) {
+        log('no runs stored yet');
+        return 1;
+      }
+      // The run's own profile is the authority when re-triaging: the stages that
+      // produced a sweep are the ones its verdicts should be read against.
+      const stored = store.getRun(id);
+      const active = stored ? (JSON.parse(stored.profile_json) as Profile) : profile;
+      if (!active) {
+        log(`run ${id} has no stored profile; pass --profile or --query`);
+        return 1;
+      }
+
+      if (command === 'triage') {
+        const cards = runTriage(store, id, active, 'card');
+        const details = runTriage(store, id, active, 'detail');
+        log(
+          `card triage: ${cards.filter(v => v.passed).length}/${cards.length} passed; ` +
+            `detail triage: ${details.filter(v => v.passed).length}/${details.length} passed`
+        );
+      } else {
+        const { reference, assessments, cleanCount } = runGems(store, id, active);
+        log(
+          `reference: median ${money(Math.round(reference.median))} from ${reference.size} clean ads ` +
+            `(of ${cleanCount} passing) — ${assessments.filter(a => a.verdict === 'gem').length} gem(s), ` +
+            `${assessments.filter(a => a.verdict === 'watch').length} to watch, ` +
+            `${assessments.filter(a => a.verdict === 'suspect').length} suspect`
+        );
+      }
+      report(store, id, Number(values.top ?? 15), values.json === true);
+      return 0;
+    }
+
+    if (!profile?.query) {
+      log('a --query (or a --profile containing one) is required');
+      return 1;
+    }
+
+    const now = new Date();
+    const id = existing ?? runId(profile, now);
+    const context = await openContext(profile, values, store);
+    const budget = newBudget(profile.limits);
+
+    try {
+      store.startRun(id, profile, now.toISOString());
+      const notes: string[] = [];
+
+      if (command === 'plan' || command === 'hunt') {
+        context.log(`planning "${profile.query}" across ${profile.states.length || 27} state(s)`);
+        const plan = await planShards(profile, makeProbe(context, budget), profile.limits);
+        store.saveShards(id, plan.shards);
+        notes.push(...plan.notes);
+
+        context.log(
+          `${plan.shards.length} slice(s) after ${plan.probes} probe(s); ` +
+            `up to ${plan.reachableAds} ads reachable` +
+            (plan.truncatedShards.length > 0
+              ? `; ${plan.truncatedShards.length} slice(s) too big to page fully`
+              : '')
+        );
+        for (const note of plan.notes) context.log(`  note: ${note}`);
+
+        if (command === 'plan') {
+          store.finishRun(id, 'planned', new Date().toISOString(), notes);
+          process.stdout.write(
+            `${JSON.stringify({ run: id, shards: plan.shards, notes: plan.notes }, null, 2)}\n`
+          );
+          return 0;
+        }
+      }
+
+      if (command === 'collect' || command === 'hunt') {
+        const outcome = await collect(context, id, budget);
+        context.log(
+          `collected ${outcome.cardsSeen} card(s), ${outcome.newAds} new, ` +
+            `${outcome.shardsDone} slice(s) done${outcome.halted ? ` — stopped: ${outcome.halted}` : ''}`
+        );
+        if (outcome.halted) notes.push(`collection stopped: ${outcome.halted}`);
+      }
+
+      if (command === 'enrich' || command === 'hunt') {
+        const cards = runTriage(store, id, profile, 'card');
+        context.log(`card triage: ${cards.filter(v => v.passed).length}/${cards.length} passed`);
+
+        const outcome = await enrich(context, id, budget);
+        context.log(
+          `read ${outcome.fetched} ad page(s), ${outcome.failed} unreadable` +
+            (outcome.halted ? ` — stopped: ${outcome.halted}` : '')
+        );
+        if (outcome.halted) notes.push(`enrichment stopped: ${outcome.halted}`);
+      }
+
+      if (command === 'hunt') {
+        const details = runTriage(store, id, profile, 'detail');
+        context.log(
+          `detail triage: ${details.filter(v => v.passed).length}/${details.length} passed`
+        );
+
+        if (profile.gems.enabled) {
+          const { reference, assessments } = runGems(store, id, profile);
+          context.log(
+            `median ${money(Math.round(reference.median))} from ${reference.size} clean ads — ` +
+              `${assessments.filter(a => a.verdict === 'gem').length} gem(s)`
+          );
+        }
+      }
+
+      store.finishRun(id, 'done', new Date().toISOString(), notes);
+      const stats = context.governor.stats;
+      context.log(
+        `requests: ${stats.requests}, blocks: ${stats.blocks}, errors: ${stats.errors}, ` +
+          `ending rate ${stats.currentRpm} rpm, ${Math.round(stats.waitedMs / 1000)}s paced`
+      );
+
+      if (command === 'hunt') report(store, id, Number(values.top ?? 15), values.json === true);
+      return 0;
+    } catch (error) {
+      const halted = error instanceof CollectionHalted;
+      store.finishRun(id, halted ? 'halted' : 'error', new Date().toISOString(), [
+        (error as Error).message,
+      ]);
+      log(`${halted ? 'halted' : 'failed'}: ${(error as Error).message}`);
+      log(`progress is saved — rerun the same command with --run ${id} to continue`);
+      return halted ? 2 : 1;
+    } finally {
+      await context.session.close();
+    }
+  } finally {
+    store.close();
+  }
+};
+
+main().then(
+  code => process.exit(code),
+  error => {
+    log(`fatal: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+);
+
+/** Written by `--profile -` callers that pipe a profile in; kept for the skill. */
+export const writeProfile = (path: string, profile: Profile): void => {
+  writeFileSync(path, JSON.stringify(profile, null, 2), 'utf8');
+};

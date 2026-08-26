@@ -1,18 +1,17 @@
 {
-  "name": "olx-mcp",
+  "name": "garimpo-olx",
   "version": "1.0.11",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/cli/index.js",
   "bin": {
-    "olx-mcp": "bin/olx-mcp-wrapper.js"
+    "garimpo": "dist/cli/index.js"
   },
   "files": [
-    "bin/**/*",
     "dist/**/*",
     "package.json",
     "README.md",
     "LICENSE",
-    "examples/*"
+    "skill/**/*"
   ],
   "engines": {
     "node": ">=18.0.0"
@@ -20,48 +19,37 @@
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
+    "garimpo": "node dist/cli/index.js",
+    "dev": "tsx src/cli/index.ts",
     "test": "vitest --run",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --run --coverage",
-    "test:ui": "vitest --ui",
-    "lint": "eslint src tests --ext .ts",
-    "lint:fix": "eslint src tests --ext .ts --fix",
-    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist coverage .tsbuildinfo",
-    "ci": "npm run lint && npm run type-check && npm run test:coverage:working && npm run build",
-    "test:unit": "vitest --run src/core/types.test.ts src/core/tool-registry.test.ts",
-    "test:tools": "vitest --run src/tools/",
-    "test:working": "vitest --run --exclude \"**/server.test.ts\" --exclude \"**/olx-pt.scraper.test.ts\" --exclude \"**/olx-pl.scraper.test.ts\"",
-    "test:coverage:working": "vitest --run --coverage --exclude \"**/server.test.ts\" --exclude \"**/olx-pt.scraper.test.ts\" --exclude \"**/olx-pl.scraper.test.ts\"",
-    "prepare": "husky install",
-    "postinstall": "playwright install chromium --with-deps || echo 'Playwright browsers will be installed on first use'",
-    "prepublishOnly": "npm run ci",
-    "postpack": "echo '✅ Package created successfully! Install with: npm install -g olx-mcp'"
+    "ci": "npm run format:check && npm run lint && npm run type-check && npm run test && npm run build",
+    "postinstall": "playwright install chromium || echo 'Run: npx playwright install chromium'"
   },
   "keywords": [
-    "mcp",
     "olx",
     "olx-brasil",
     "scraper",
-    "claude",
-    "model-context-protocol",
-    "web-scraping",
+    "cli",
+    "playwright",
+    "classifieds",
     "marketplace",
     "brazil",
-    "europe",
-    "portugal",
-    "poland"
+    "claude-skill"
   ],
   "publishConfig": {
     "access": "public"
   },
   "author": "Łukasz Margiela",
   "license": "MIT",
-  "description": "OLX MCP server that enables Claude Desktop to browse and search OLX listings across multiple domains (BR, PT, PL, BG, RO, UA)",
+  "description": "CLI for bulk collection and triage of olx.com.br classified ads: adaptive sharding past the 5.000-result ceiling, configurable triage stages, and bargain detection against a product's own median price",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/l-margiela/olx-mcp.git"
@@ -71,10 +59,8 @@
   },
   "homepage": "https://github.com/l-margiela/olx-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.4",
     "playwright": "^1.55.0",
-    "zod": "^3.25.76",
-    "zod-to-json-schema": "^3.24.6"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",

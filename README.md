@@ -1,213 +1,220 @@
-# OLX MCP Server
+# garimpo-olx
 
-Why search for e-waste in your area by yourself if Claude can do it for you?
+Bulk collection and triage of [olx.com.br](https://www.olx.com.br) classified ads.
 
-100% AI slop.
+One command sweeps a product across Brazil, filters it through configurable triage
+stages, and ranks what survives against the going rate for that product on OLX
+itself — so a listing far below the median, in usable condition, from a seller with
+a record, comes out on top.
 
-## Features
+Ships as a CLI plus a Claude Code skill. There is no MCP server: every useful run
+here collects hundreds of ads, and routing that through tool calls would spend the
+model's context on rows instead of on conclusions.
 
-- 🌍 **Multi-Domain Support**: Search across 6 OLX domains (Brazil, Portugal, Poland, Bulgaria, Romania, Ukraine)
-- 🔍 **Search Listings**: Search with filters for category, location, price range, and sorting
-- 📋 **Listing Details**: Get detailed information about specific listings including seller info
-- 🎭 **Browser Automation**: Reliable web scraping using Playwright
+## Install
 
-<img width="739" height="858" alt="Screenshot 2025-09-02 at 22 47 54" src="https://github.com/user-attachments/assets/c6fee7a4-fa84-4ca5-9eb0-7dc8a1ed6c58" />
-
-## Installation
-
-### 📋 Claude Desktop Configuration
-
-1. **Locate your Claude Desktop config file:**
-
-   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-   - **Linux**: `~/.config/Claude/claude_desktop_config.json`
-
-2. **Add the OLX MCP server to your configuration:**
-
-```json
-{
-  "mcpServers": {
-    "olx-mcp": {
-      "command": "npx",
-      "args": ["olx-mcp"]
-    }
-  }
-}
-```
-
-3. **Restart Claude Desktop** to load the new configuration.
-
-### 🔄 Alternative: Global Installation
-
-If you prefer to install globally:
+Needs Node 22 or newer (it uses the built-in `node:sqlite`) and a Chromium for
+Playwright.
 
 ```bash
-npm install -g olx-mcp
+npm install && npm run build && npm link
 ```
-
-Then use this config:
-```json
-{
-  "mcpServers": {
-    "olx-mcp": {
-      "command": "olx-mcp"
-    }
-  }
-}
-```
-
-### 📦 Development: From Source
 
 ```bash
-git clone https://github.com/l-margiela/olx-mcp.git
-cd olx-mcp
-npm install
-npm run build
+npx playwright install chromium
 ```
 
-Use this config for development:
-```json
-{
-  "mcpServers": {
-    "olx-mcp": {
-      "command": "node",
-      "args": ["/absolute/path/to/olx-mcp/dist/index.js"]
-    }
-  }
-}
+If the bundled Chromium will not launch, pass `--channel chrome` to use the Chrome
+already installed on the machine.
+
+## Use
+
+```bash
+garimpo hunt --query "galaxy s22 ultra" --states rs \
+  --require 's\s*22,ultra' --reject 'capa,capinha,carregador,s21,s23,plus' \
+  --min-price 800 --max-price 4000 --tolerate minor --gems --top 10
 ```
 
-## Usage
+Better, for anything you might run twice — a profile is a record, shell history is
+not:
 
-Once configured, you can use the following tools in your MCP client:
-
-### Search Listings
-
-Search for listings on any supported OLX domain with various filters:
-
-```
-Can you search for "apartments" in "Lisboa" on OLX Portugal with a maximum price of 1000 euros?
+```bash
+garimpo template > perfil.json   # a full, editable profile including the defect lexicon
+garimpo hunt --profile perfil.json
 ```
 
-```
-Search for "telefon" in "warszawa" on OLX Poland with prices between 100-500 PLN?
-```
+For a large sweep, run the phases separately so collection is not held hostage to
+the slowest part:
 
-```
-Procura "iphone 13" em São Paulo na OLX Brasil, entre R$ 500 e R$ 2000, mais baratos primeiro
-```
-
-**Parameters:**
-- `domain` (required): OLX domain ('olx.com.br', 'olx.pt', 'olx.pl', 'olx.bg', 'olx.ro', 'olx.ua')
-- `query` (optional): Search term
-- `category` (optional): Category filter
-- `location` (optional): Location filter
-- `minPrice` (optional): Minimum price
-- `maxPrice` (optional): Maximum price
-- `page` (default: 1): Page number
-- `limit` (default: 20): Items per page
-- `sortBy` (default: 'relevance'): Sort order ('relevance', 'date', 'price-asc', 'price-desc')
-
-### Listing Details
-
-Get detailed information about a specific listing from any supported domain:
-
-```
-Can you get the details for listing "ABC123" from OLX Portugal?
+```bash
+garimpo plan    --profile perfil.json          # how the search will be sliced
+garimpo collect --profile perfil.json --run <id>
+garimpo enrich  --profile perfil.json --run <id> --max-details 100
+garimpo gems    --run <id>
+garimpo report  --run <id> --top 20
 ```
 
-```
-Show me details for listing "XYZ789" from OLX Poland including images?
-```
+`garimpo --help` lists every flag.
 
-**Parameters:**
-- `domain` (required): OLX domain ('olx.com.br', 'olx.pt', 'olx.pl', 'olx.bg', 'olx.ro', 'olx.ua')
-- `listingId` (required): The ID of the listing — on olx.com.br this is the numeric id that ends
-  every ad URL (`.../celulares/iphone-11-128gb-1528464732` → `1528464732`)
-- `includeImages` (default: false): Include image URLs
-- `includeSellerInfo` (default: true): Include seller information
+## What OLX actually does, and why the design looks like this
 
-## OLX Brazil (olx.com.br)
+Every constraint below was measured against the live site. They are the reason the
+tool is shaped the way it is.
 
-`olx.com.br` shares the brand but not the application. It is a separate Brazilian frontend, so it
-is wired up differently from the European domains — worth knowing when passing filters.
+### Searches stop at 5.000 results
 
-### Categories and locations are site slugs, and order matters
+OLX pages 100 pages of 50 and no further. Page 101 does not error — it serves page
+100 again, which is how a naive crawler reads the same 50 ads forever and believes
+they are new. `q=iphone` nationwide reports over a hundred thousand results, so no
+single query can reach it.
 
-A Brazilian search is addressed through the path, **category first, then location**:
+`plan` therefore cuts the search into slices that each fit under the ceiling,
+probing before it splits: state first (27 ways, one request each), then category,
+then price bands off a geometric ladder, then bisection of a band still too big.
+A state with twelve matching ads costs one request and is never split.
 
-```
-https://www.olx.com.br/<category>/<state>/<region>?q=...
-```
+### The path is `/<category>/<state>/<region>`, in that order
 
-- `category` — a slug or slug path: `celulares`, `autos-e-pecas/carros-vans-e-utilitarios`
-- `location` — a state (`SP` or `estado-sp`), a region (`sao-paulo-e-regiao`), or both
-  (`estado-sp/sao-paulo-e-regiao`). A bare two-letter UF is expanded to `estado-<uf>` for you.
-
-The order is not cosmetic: OLX silently ignores a category placed after a location, so
-`/estado-sp/celulares` returns *every* São Paulo ad rather than only the phones. The server always
-emits the working order.
-
-### Results stop at page 100
-
-Brazilian search caps out at 5.000 results. Requesting `page: 101` does not error on OLX's side —
-it serves page 100 again — so the server refuses it outright rather than handing back duplicate
-listings that look new. Narrow the search with a category, a location or a price range instead.
+A category placed after a location is silently ignored — `/estado-sp/celulares`
+returns every São Paulo ad, not just the phones. The tool only ever emits the order
+that works.
 
 ### `sortBy` changes *which* ads come back, not just their order
 
-This is the surprising one, and it is the site's behaviour, not the scraper's. Applying any sort
-makes OLX answer with a different result set:
+Applying any sort makes OLX answer with a different result set:
 
-| query (in `estado-rs`) | `relevance` | any sort (`sf=1`, `sp=1`, `sp=5`) |
+| query (in `estado-rs`) | no sort | any sort |
 | --- | --- | --- |
-| `s22 ultra` | 71 results | 7 results |
-| `galaxy s22 ultra 256gb` | 13 results | 7 results |
-| `s22` | 21 results | 21 results |
-| `ultra` | 352 results | **584 results** |
+| `s22 ultra` | 71 | 7 |
+| `galaxy s22 ultra 256gb` | 13 | 7 |
+| `ultra` | 352 | **584** |
 
-So a sort can narrow the set *or* widen it. The unsorted view appears to be a ranked, fuzzy match —
-of those 71 `s22 ultra` hits, only 7 were actually S22 Ultras; the rest were S22, S22+, S21 Ultra,
-S23 Ultra and accessories. The sorted view looks like it resolves the query to a product model and
-returns only ads tagged with it, which would explain why three extra query words still yield the
-same 7. That last part is inference, not something the site states.
+A sort can narrow the set or widen it, so this is not "sorting filters". Sweeps
+always run unsorted, which is the widest set, and order locally.
 
-What it means in practice: `totalCount` moves when you change `sortBy`, and asking for
-`price-asc` to find the cheapest ad searches a *different corpus* than the default view — so it can
-miss an ad the fuzzy match would have caught (a typo'd title, say). When you need the same ads a
-person browsing the site sees, search with `relevance` and compare the prices yourself.
+### Search is fuzzy, so title matching is not optional
 
-### Listing details come from structured data
+Of those 71 `s22 ultra` hits in Rio Grande do Sul, seven were actually S22 Ultras.
+The rest were S22, S22+, S21 Ultra, S23 Ultra, cases and screen protectors. That is
+what `--require` and `--reject` are for, and getting them right matters more than
+any other setting.
 
-Brazilian listing pages carry build-hashed class names, so there is nothing durable to select on.
-Details are read from the page's schema.org `Product` block and its analytics payload instead, which
-also means the reply carries a bit more than on the European domains: the ad's own attributes
-(`Marca`, `Condição`, `Memória interna`, …), the full image list, and the publish timestamp.
+### Cloudflare is the real bottleneck
 
-Only three sort orders exist, each on its own URL parameter (`sf=1` for newest, `sp=1`/`sp=5` for
-price). Anything else falls back to relevance, which is why the server sends only those.
+Blocks arrive as 403 across the whole domain, by IP. Two things follow.
+
+A refused page still parses — it just has no listing cards on it — so without a
+check it reads as "nothing matched", which is the one answer a caller cannot tell
+apart from the truth. Every navigation checks its status; 403 and 429 are never
+retried, because the backoff here is seconds while a block lasts minutes and
+retrying only adds to the traffic that caused it.
+
+And the request rate is *found*, not configured: it rises by 1 rpm per clean
+stretch and is halved on every block, then the run halts after four in a row with
+everything saved. Deliberately probing for the threshold would mean hammering
+someone else's servers to learn a number that is neither published nor stable.
+
+### One request buys 50 cards or 1 detail
+
+That 50× asymmetry is the whole economy of the tool. Cheap filters (price, title,
+photos, recency) run on search cards before any ad page is fetched; description,
+attributes and seller history only exist on the ad page, so defect and seller
+filters necessarily pay for it. Stages declare which they need, and the pipeline
+puts them in that order rather than trusting the author to.
+
+### Listing pages ship no stable selectors
+
+Class names are build-hashed styled-components. Details come from the page's
+schema.org `Product` block and its analytics payload; the seller card and location,
+which exist only in the markup, are found by anchoring on visible Portuguese labels
+("Vendas concluídas") and parsed from page text by pure functions that are tested
+against captured pages rather than a live site.
+
+## Triage
+
+Stages are data, validated by zod, so a pipeline can be saved and replayed:
+
+| stage | reads | judges |
+| --- | --- | --- |
+| `price-range` | card | price band, and whether an unpriced ad counts |
+| `title-match` | card | required and excluded patterns |
+| `for-sale` | card | drops wanted-ads, rentals, accessory listings |
+| `recency` | card | age from the card's own relative date |
+| `has-image` | card | photo count |
+| `condition` | detail | OLX's own "Condição" values |
+| `defects` | detail | the description, by severity |
+| `seller` | detail | rating, sales, cancellations, account age, verification |
+| `attribute` | detail | any attribute, by allow/deny list or regex |
+
+### Defect detection reads negation
+
+The hard part is not finding defect words, it is not being fooled by honest
+sellers. "Sem trincos, sem linha verde, nenhum risco" describes a pristine phone,
+and a keyword filter throws exactly those ads away while keeping the ones that
+never mention condition at all. Every hit is checked for a negator in the words
+before it, bounded by the clause — so a "sem carregador" cannot cancel a cracked
+screen mentioned in the previous sentence.
+
+The lexicon is data (`garimpo template` prints it) because it is the part most
+worth tuning: "linha verde" decides a phone screen and means nothing on a bicycle.
+
+## Gem hunting
+
+The premise: an ad is interesting when it is far below what the same product in
+comparable shape sells for.
+
+- The reference is the median of the **clean** ads — the ones that passed triage.
+  Including the wrecks lowers the median, which raises the bar every genuine
+  bargain has to clear.
+- Median and MAD, not mean and standard deviation. Used-goods prices are skewed and
+  salted with R$ 1 placeholder listings; both tails drag a mean around, and a
+  standard deviation computed over them is wide enough to call nothing unusual.
+- A bargain lives in a **band**. Far enough below the median stops meaning "cheap"
+  and starts meaning "not the thing advertised" — a scam, a typo, a deposit on an
+  instalment plan, a case sold under the phone's name. Anything under
+  `implausibleBelowPct` of the median comes back as `suspect`: surfaced, because
+  occasionally it is real, never ranked first.
+- Quality and seller trust multiply into the score rather than adding to it, so no
+  discount is large enough to redeem a broken unit from someone who cancels every
+  order.
+- Below `minReferenceSize` comparables it refuses to judge at all. Without knowing
+  what the product costs there is no such thing as a discount.
+
+Verdicts: `gem`, `watch`, `suspect`, `rejected`.
+
+## Runs are resumable, and say what they missed
+
+Everything lands in SQLite under `--data-dir` (default `.garimpo`). Ads are keyed
+globally, so a product swept last week is already known this week and only its price
+needs refreshing. Shards record how far they got, so a block on page 40 of 100
+resumes at 41. Re-running a command with `--run <id>` continues; it does not
+restart.
+
+Two coverage limits are reported rather than hidden:
+
+- A slice OLX says holds more than 5.000 ads that could not be split further is
+  marked `truncated`, and `plan` says so in its notes.
+- **Ads OLX lists without a price appear in no price band**, so where a slice had to
+  be split by price they are unreachable. `plan` warns when that applies.
+
+## Reading results
+
+`report` is the interface, not the database. It gives the funnel (how many ads each
+stage dropped, and the grouped reasons), the price range, and the top finds with the
+reason for each. `--json` for the same thing structured.
+
+The funnel is the number that matters: "5 of 57 passed, 43 dropped for a title
+without 's22'" tells you whether a filter is working or eating the corpus.
 
 ## Development
 
-### Scripts
-
-- `npm run build` - Build the TypeScript project
-- `npm run dev` - Run in development mode with hot reload
-- `npm start` - Run the built server
-- `npm test` - Run tests (when available)
-- `npm run clean` - Clean build artifacts
-
-## Troubleshooting
-
-### MCP Inspector
-
-For debugging MCP communication, you can use the MCP Inspector:
-
 ```bash
-npx @modelcontextprotocol/inspector node dist/index.js
+npm run ci     # lint, typecheck, tests, build
 ```
+
+Parsing, sharding, pacing, triage and gem scoring are pure and tested without a
+browser, against page text captured from real ads. Only the scrapers need Chromium.
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT — see LICENSE.
