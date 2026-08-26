@@ -5,6 +5,9 @@ import { OLXBRScraper } from '../scrapers/olx/olx-br.scraper.js';
 import { Store, StoredAd, StoredDetail } from '../store/db.js';
 import { BrowserSession } from '../collect/session.js';
 import { RateGovernor, CollectionHalted } from '../collect/governor.js';
+import { HtmlFetcher, RequestMeter } from '../collect/fetcher.js';
+import { BlockMemory, describeWait } from '../collect/cooldown.js';
+import { isDisallowed, parseRobots, rpmCeilingFor } from '../collect/robots.js';
 import { planShards } from '../collect/shard.js';
 import { collect, enrich, makeProbe, newBudget, RunnerContext } from '../collect/runner.js';
 import { Candidate, triage, Verdict } from '../triage/stages.js';
@@ -53,9 +56,14 @@ Gems
   --min-reference 12        comparables required before judging anything
 
 Budget and pacing
+  --gentle                  slowest safe preset: ~2 rpm, one page at a time,
+                            a five-minute sit-down every 60 requests
   --max-cards, --max-details, --max-requests, --max-shards, --max-minutes
-  --rpm 12                  starting request rate; it adapts from there
-  --max-rpm 40, --cooldown 120, --concurrency 2
+  --rpm 6                   starting request rate; it adapts from there
+  --max-rpm 15, --cooldown 300, --concurrency 1
+  --pause-every 120 --pause-for 180   long idle gaps between bursts
+  --refresh-after-days 7    re-read an ad page only if this stale
+  --force                   start even though a previous run was blocked
 
 Output
   --run <id>                act on a specific run (default: the latest)
@@ -79,12 +87,24 @@ const openContext = async (
     headless: values.headed !== true,
     channel: values.channel ? String(values.channel) : undefined,
     blockAssets: values['no-block-assets'] !== true,
+    onBrowserChosen: using => {
+      if (values.quiet !== true) log(`browser: ${using}`);
+    },
   });
+
+  const meter = new RequestMeter();
+  const fetcher = await HtmlFetcher.create(session.httpContext, session.parserContext);
 
   return {
     scraper: new OLXBRScraper(session.playwrightBrowser),
     session,
     governor: new RateGovernor(profile.pacing),
+    fetcher,
+    meter,
+    blockMemory: new BlockMemory(profile.dataDir),
+    // No seller stage means no ad ever justifies running JavaScript, and the run
+    // costs exactly one request per ad.
+    needsSeller: profile.stages.some(stage => stage.type === 'seller'),
     store,
     profile,
     log: values.quiet === true ? () => {} : log,
@@ -319,6 +339,17 @@ const main = async (): Promise<number> => {
       return 1;
     }
 
+    const memory = new BlockMemory(profile.dataDir);
+    const waiting = memory.remainingMs(profile.pacing.cooldownSeconds);
+    if (waiting > 0 && values.force !== true) {
+      log(
+        `olx.com.br blocked a previous run and the cooldown has ${describeWait(waiting)} left. ` +
+          `Starting now would just earn another refusal — that is how a rate limit turns into a ` +
+          `real ban. Wait it out, or pass --force if you know better.`
+      );
+      return 3;
+    }
+
     const now = new Date();
     const id = existing ?? runId(profile, now);
     const context = await openContext(profile, values, store);
@@ -327,6 +358,35 @@ const main = async (): Promise<number> => {
     try {
       store.startRun(id, profile, now.toISOString());
       const notes: string[] = [];
+
+      // One request, at the start, to read what the site asks of crawlers. A
+      // stated delay becomes a hard ceiling; a disallowed path is reported rather
+      // than silently obeyed or silently ignored, because that is the operator's
+      // call to make knowingly.
+      try {
+        const robotsTxt = await context.fetcher.get('https://www.olx.com.br/robots.txt');
+        const rules = parseRobots(robotsTxt.html);
+        if (rules.available) {
+          const ceiling = rpmCeilingFor(rules);
+          if (ceiling !== undefined) {
+            context.governor.imposeCeiling(ceiling);
+            context.log(
+              `robots.txt asks for ${rules.crawlDelay}s between requests — capping at ${ceiling.toFixed(1)} rpm`
+            );
+            notes.push(`robots.txt Crawl-delay ${rules.crawlDelay}s honoured`);
+          }
+          const searchPath = new URL(
+            context.scraper.searchUrlFor({ domain: 'olx.com.br', query: profile.query })
+          ).pathname;
+          if (isDisallowed(rules, searchPath)) {
+            const warning = `robots.txt disallows ${searchPath} for generic crawlers.`;
+            context.log(warning);
+            notes.push(warning);
+          }
+        }
+      } catch (error) {
+        context.log(`could not read robots.txt: ${(error as Error).message}`);
+      }
 
       if (command === 'plan' || command === 'hunt') {
         context.log(`planning "${profile.query}" across ${profile.states.length || 27} state(s)`);
@@ -389,10 +449,15 @@ const main = async (): Promise<number> => {
       }
 
       store.finishRun(id, 'done', new Date().toISOString(), notes);
+      if (context.governor.stats.blocks === 0) context.blockMemory.recordClean();
+
       const stats = context.governor.stats;
+      const http = context.fetcher.stats;
       context.log(
-        `requests: ${stats.requests}, blocks: ${stats.blocks}, errors: ${stats.errors}, ` +
-          `ending rate ${stats.currentRpm} rpm, ${Math.round(stats.waitedMs / 1000)}s paced`
+        `${http.requests} HTTP fetch(es) (${http.kilobytes} KB) + ${context.meter.total} request(s) ` +
+          `from page loads; blocks: ${stats.blocks}, errors: ${stats.errors}, ` +
+          `ending rate ${stats.currentRpm} rpm, ` +
+          `${Math.round((stats.waitedMs + stats.cooldownMs) / 1000)}s spent waiting`
       );
 
       if (command === 'hunt') report(store, id, Number(values.top ?? 15), values.json === true);
@@ -406,6 +471,7 @@ const main = async (): Promise<number> => {
       log(`progress is saved — rerun the same command with --run ${id} to continue`);
       return halted ? 2 : 1;
     } finally {
+      await context.fetcher.close();
       await context.session.close();
     }
   } finally {

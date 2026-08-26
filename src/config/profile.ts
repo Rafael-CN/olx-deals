@@ -53,21 +53,32 @@ export type BrazilState = (typeof BRAZIL_STATES)[number];
  */
 export const PacingSchema = z
   .object({
-    startRequestsPerMinute: z.number().min(1).max(600).default(12),
-    minRequestsPerMinute: z.number().min(0.5).max(600).default(3),
-    maxRequestsPerMinute: z.number().min(1).max(600).default(40),
+    startRequestsPerMinute: z.number().min(0.2).max(600).default(6),
+    minRequestsPerMinute: z.number().min(0.2).max(600).default(1),
+    maxRequestsPerMinute: z.number().min(1).max(600).default(15),
     /** Additive increase: +1 rpm after this many consecutive clean requests. */
-    increaseAfterCleanRequests: z.number().min(1).default(25),
+    increaseAfterCleanRequests: z.number().min(1).default(40),
     /** Multiplicative decrease applied to the current rate on a block. */
-    backoffFactor: z.number().min(0.1).max(0.95).default(0.5),
-    /** Hard pause after a block, before anything is retried. */
-    cooldownSeconds: z.number().min(5).max(3600).default(120),
+    backoffFactor: z.number().min(0.1).max(0.95).default(0.4),
+    /** First pause after a block; it doubles with each consecutive refusal. */
+    cooldownSeconds: z.number().min(5).max(7200).default(300),
+    /** Ceiling on that doubling. */
+    maxCooldownSeconds: z.number().min(5).max(86400).default(3600),
     /** Consecutive blocks that end the run rather than slowing it further. */
-    haltAfterConsecutiveBlocks: z.number().min(1).default(4),
+    haltAfterConsecutiveBlocks: z.number().min(1).default(3),
     /** Random pause added to every request, so the cadence is not machine-flat. */
-    jitterMs: z.number().min(0).max(30000).default(1200),
-    /** Pages fetched in parallel. Above ~2 this mostly just earns blocks sooner. */
-    concurrency: z.number().min(1).max(8).default(2),
+    jitterMs: z.number().min(0).max(120000).default(2500),
+    /**
+     * Requests between long idle gaps. Windowed rate limits forgive a pause far
+     * more readily than a continuous trickle at the same average rate.
+     */
+    pauseEveryRequests: z.number().min(0).default(120),
+    pauseForSeconds: z.number().min(0).default(180),
+    /**
+     * Pages fetched in parallel. One by default: concurrency buys latency, and
+     * latency is not the constraint here — the block is.
+     */
+    concurrency: z.number().min(1).max(8).default(1),
   })
   .default({});
 
@@ -88,6 +99,11 @@ export const LimitsSchema = z
     /** Give up splitting a shard this deep; it is emitted as truncated instead. */
     maxSplitDepth: z.number().min(1).max(12).default(6),
     maxRunMinutes: z.number().min(1).default(180),
+    /**
+     * Skip ads whose page was read within this many days. A repeat hunt over a
+     * known product should cost almost nothing.
+     */
+    refreshDetailAfterDays: z.number().min(0).default(7),
   })
   .default({});
 

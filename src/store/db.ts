@@ -380,8 +380,20 @@ export class Store {
       );
   }
 
-  /** Ads that passed card-level triage and have not been fetched yet. */
-  adsAwaitingDetail(runId: string, limit: number): StoredAd[] {
+  /**
+   * Ads that passed card-level triage and still need their page read.
+   *
+   * "Still need" includes ads read long enough ago to be stale: a repeat hunt
+   * over a known product should cost almost nothing, so anything fetched inside
+   * the freshness window is skipped rather than fetched again.
+   */
+  adsAwaitingDetail(runId: string, limit: number, refreshAfterDays?: number): StoredAd[] {
+    // Omitted means never re-read: the safe default, since re-reading is the
+    // expensive mistake. A number re-reads anything older than that.
+    const cutoff =
+      refreshAfterDays === undefined
+        ? ''
+        : new Date(Date.now() - refreshAfterDays * 86_400_000).toISOString();
     return this.db
       .prepare(
         `SELECT a.id, a.url, a.title, a.price, a.location, a.image_url, a.published_at
@@ -389,11 +401,12 @@ export class Store {
          JOIN run_ads r ON r.ad_id = a.id
          JOIN verdicts v ON v.ad_id = a.id AND v.run_id = r.run_id AND v.phase = 'card'
          LEFT JOIN ad_details d ON d.ad_id = a.id
-         WHERE r.run_id = ? AND v.passed = 1 AND d.ad_id IS NULL
+         WHERE r.run_id = ? AND v.passed = 1
+           AND (d.ad_id IS NULL OR d.fetched_at < ?)
          ORDER BY a.price ASC NULLS LAST
          LIMIT ?`
       )
-      .all(runId, limit) as never;
+      .all(runId, cutoff, limit) as never;
   }
 
   detailsFor(runId: string): Array<StoredAd & StoredDetail> {

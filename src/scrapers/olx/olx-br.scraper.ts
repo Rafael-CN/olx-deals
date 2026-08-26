@@ -1,6 +1,6 @@
 import { Browser, Page } from 'playwright';
 import { NonRetryableError } from '../base/scraper.interface.js';
-import { BaseOlxScraper } from './base-olx.scraper.js';
+import { BaseOlxScraper, DetailReadOptions } from './base-olx.scraper.js';
 import { Listing, ListingId, SearchFilters } from '../../core/types.js';
 import { formatBrl, parseCardDate, parseSellerFromLines, stripHtml } from './br-parsers.js';
 
@@ -116,17 +116,22 @@ export class OLXBRScraper extends BaseOlxScraper {
   protected override async extractListingDetail(
     page: Page,
     listingId: ListingId,
-    url: string
+    url: string,
+    options: DetailReadOptions = {}
   ): Promise<Listing> {
-    // The seller card is client-rendered and is not in the document at
-    // domcontentloaded, which is as long as this domain's navigation waits.
-    // Best-effort: an ad whose seller block never appears still yields
-    // everything the JSON-LD carries, so a timeout here is not a failure.
-    await page
-      .waitForFunction(() => /Na OLX desde/.test(document.body.innerText), undefined, {
-        timeout: 10000,
-      })
-      .catch(() => {});
+    // The seller card is client-rendered, so it is absent at domcontentloaded —
+    // as long as this domain's navigation waits — and absent forever on a page
+    // fetched as HTML. Waiting only makes sense in the first case; in the second
+    // it would burn the timeout on every ad to learn nothing.
+    if (options.hydrated) {
+      // Best-effort even then: an ad whose seller block never appears still
+      // yields everything the JSON-LD carries, so a timeout is not a failure.
+      await page
+        .waitForFunction(() => /Na OLX desde/.test(document.body.innerText), undefined, {
+          timeout: 10000,
+        })
+        .catch(() => {});
+    }
 
     const raw = await page.evaluate(() => {
       interface JsonLdProduct {
@@ -155,12 +160,27 @@ export class OLXBRScraper extends BaseOlxScraper {
         }
       }, undefined);
 
-      /** GTM's entry carries the publish timestamp. */
+      /**
+       * GTM's entry carries the publish timestamp. It is read from the live
+       * dataLayer when the page ran its scripts, and out of the script's own text
+       * when it did not — which is the case for a page fetched as HTML, where
+       * nothing ever assigns window.dataLayer.
+       */
       const gtmEntries = (window as unknown as { dataLayer?: GtmEntry[] }).dataLayer ?? [];
-      const gtmDetail = gtmEntries.reduce<{ adDate?: number } | undefined>(
+      const liveDetail = gtmEntries.reduce<{ adDate?: number } | undefined>(
         (found, entry) => found ?? entry?.page?.detail,
         undefined
       );
+
+      const adDateFromMarkup = (): number | undefined => {
+        for (const script of Array.from(document.scripts)) {
+          const match = script.textContent?.match(/"adDate"\s*:\s*(\d{9,})/);
+          if (match?.[1]) return Number(match[1]);
+        }
+        return undefined;
+      };
+
+      const gtmDetail = liveDetail ?? { adDate: adDateFromMarkup() };
 
       /**
        * The "Detalhes" block pairs a `typo-overline` label with its value in the

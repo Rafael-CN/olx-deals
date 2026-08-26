@@ -14,6 +14,15 @@ import {
 } from '../../core/types.js';
 import { getDomainConfig } from './domain-config.js';
 
+/**
+ * Whether the page executed JavaScript. Fields that only exist after hydration —
+ * the Brazilian seller card — are not worth waiting for on a page that will
+ * never run any.
+ */
+export interface DetailReadOptions {
+  readonly hydrated?: boolean | undefined;
+}
+
 export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, SearchResult> {
   private static readonly URL_CACHE_LIMIT = 2000;
 
@@ -69,43 +78,70 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
    * context reuses them.
    */
   async searchOn(page: Page, filters: SearchFilters, signal?: AbortSignal): Promise<SearchResult> {
-    {
-      const searchUrl = this.buildSearchUrl(filters);
+    const searchUrl = this.buildSearchUrl(filters);
+    const response = await page.goto(searchUrl, { waitUntil: this.waitUntil });
+    this.assertServedByOlx(response, searchUrl);
+    await this.waitForSearchResults(page);
+    return await this.readSearchPage(page, filters, signal);
+  }
 
-      const response = await page.goto(searchUrl, { waitUntil: this.waitUntil });
-      this.assertServedByOlx(response, searchUrl);
-      await this.waitForSearchResults(page);
-
-      if (signal?.aborted) {
-        throw new Error('Operation cancelled');
-      }
-
-      const currentPage = filters.page || 1;
-      const { listings, cardCount } = await this.extractListings(page, filters.limit);
-      const pagination = await this.extractPaginationInfo(page, currentPage, cardCount);
-
-      // The card selector going stale yields no cards at all, so extractListings
-      // cannot see it. A result count read through an unrelated selector can:
-      // "OLX says there are matches but we parsed none" is never a real state.
-      // Only meaningful on the first page — paging past the end legitimately
-      // returns nothing.
-      if (
-        listings.length === 0 &&
-        cardCount === 0 &&
-        pagination.totalCount > 0 &&
-        currentPage === 1
-      ) {
-        throw new NonRetryableError(
-          `${this.domainConfig.domain} reports ${pagination.totalCount} results but no listing ` +
-            `cards matched "${this.domainConfig.selectors.search.listingCard}" — the card selector is likely stale.`
-        );
-      }
-
-      return {
-        listings,
-        ...pagination,
-      };
+  /**
+   * Reads a search page whose HTML is already in the page — whether it got there
+   * by navigation or by having been fetched over HTTP and set as content.
+   *
+   * Splitting this out is what lets a bulk run skip the browser entirely: OLX
+   * server-renders all fifty cards, so one HTTP request plus a DOM that never
+   * loads anything gets the same result as a full page load costing dozens.
+   */
+  async readSearchPage(
+    page: Page,
+    filters: SearchFilters,
+    signal?: AbortSignal
+  ): Promise<SearchResult> {
+    if (signal?.aborted) {
+      throw new Error('Operation cancelled');
     }
+
+    const currentPage = filters.page || 1;
+    const { listings, cardCount } = await this.extractListings(page, filters.limit);
+    const pagination = await this.extractPaginationInfo(page, currentPage, cardCount);
+
+    // The card selector going stale yields no cards at all, so extractListings
+    // cannot see it. A result count read through an unrelated selector can:
+    // "OLX says there are matches but we parsed none" is never a real state.
+    // Only meaningful on the first page — paging past the end legitimately
+    // returns nothing.
+    if (
+      listings.length === 0 &&
+      cardCount === 0 &&
+      pagination.totalCount > 0 &&
+      currentPage === 1
+    ) {
+      throw new NonRetryableError(
+        `${this.domainConfig.domain} reports ${pagination.totalCount} results but no listing ` +
+          `cards matched "${this.domainConfig.selectors.search.listingCard}" — the card selector is likely stale.`
+      );
+    }
+
+    return { listings, ...pagination };
+  }
+
+  /** The URL a set of filters resolves to, for callers that fetch it themselves. */
+  searchUrlFor(filters: SearchFilters): string {
+    return this.buildSearchUrl(filters);
+  }
+
+  /**
+   * Reads a listing page whose HTML is already in the page. The counterpart to
+   * readSearchPage: same extraction, no navigation, so an ad fetched over HTTP
+   * costs one request.
+   */
+  async readListingPage(
+    page: Page,
+    url: string,
+    options: DetailReadOptions = {}
+  ): Promise<Listing> {
+    return await this.extractListingDetail(page, this.extractListingId(url), url, options);
   }
 
   protected buildSearchUrl(filters: SearchFilters): string {
@@ -417,7 +453,9 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
       throw new Error('Operation cancelled');
     }
 
-    return await this.extractListingDetail(page, listingId ?? this.extractListingId(url), url);
+    return await this.extractListingDetail(page, listingId ?? this.extractListingId(url), url, {
+      hydrated: true,
+    });
   }
 
   /**
@@ -427,8 +465,10 @@ export abstract class BaseOlxScraper extends PlaywrightScraper<SearchFilters, Se
   protected async extractListingDetail(
     page: Page,
     listingId: ListingId,
-    url: string
+    url: string,
+    options: DetailReadOptions = {}
   ): Promise<Listing> {
+    void options;
     const detail = this.requireDetailSelectors();
     const [title, price, description, location, seller] = await Promise.all([
       readText(page, detail.title),

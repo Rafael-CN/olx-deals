@@ -26,9 +26,21 @@ Foram todos medidos contra o site, não deduzidos.
    estaria varrendo um corpus menor.
 
 3. **Cloudflare bloqueia, e é o gargalo real.** Blocos de 403 chegam por IP e
-   valem para todo o domínio. O `garimpo` desacelera sozinho (sobe devagar quando
-   limpo, corta pela metade a cada bloqueio) e **para** depois de bloqueios
-   consecutivos, salvando tudo. Um 403 nunca é reportado como "zero resultados".
+   valem para todo o domínio, `www` incluído. Três coisas seguem disso:
+
+   - **Uma "requisição" não é uma requisição.** Abrir uma página da OLX no
+     browser dispara o documento, os chunks do Next, analytics, slots de anúncio
+     e as chamadas de API da própria página — dezenas de hits, muitos para
+     olx.com.br. Por isso o `garimpo` **não abre página**: busca o HTML por HTTP
+     (1 requisição) e renderiza num DOM com JS desligado e todas as rotas
+     abortadas. Card e dados estruturados do anúncio vêm no HTML do servidor.
+   - **Só o card do vendedor exige JavaScript.** Ele hidrata no cliente. Então
+     página completa é gasta *por anúncio*, e só se alguma etapa for ler
+     vendedor. Perfil sem `seller` nunca paga por JS.
+   - O ritmo se adapta (sobe devagar limpo, corta pela metade no bloqueio,
+     cooldown dobrando), o run **para** após bloqueios consecutivos, e o
+     bloqueio é **lembrado entre invocações**: começar de novo cedo demais é
+     recusado. Um 403 nunca é reportado como "zero resultados".
 
 4. **Detalhe custa 50× mais que card.** Uma requisição traz 50 cards; traz *um*
    detalhe. Toda filtragem que dá pra fazer no card vem antes — o CLI já ordena
@@ -188,6 +200,37 @@ O que conta como jóia:
 Com menos de `minReferenceSize` comparáveis o CLI **se recusa** a chamar
 qualquer coisa de jóia. Não contorne baixando o número: sem saber o preço do
 produto não existe desconto, e um "achado" sobre 3 anúncios é ruído.
+
+## Não tomar bloqueio
+
+Se a prioridade é nunca ser bloqueado, mesmo custando horas:
+
+```bash
+garimpo hunt --profile /tmp/perfil.json --gentle
+```
+
+`--gentle` é ~2 rpm, uma página por vez, 8s de jitter, pausa de 5 min a cada 60
+requisições, e 10 min de silêncio no primeiro 403. Uma varredura estadual leva
+horas assim — que é exatamente a troca pedida.
+
+Outras alavancas, em ordem de efeito:
+
+- **Não peça detalhe do que você vai descartar.** O filtro de card é grátis
+  comparado à página do anúncio. `--require`/`--reject` bem feitos cortam 80-90%
+  antes de qualquer detalhe.
+- **Não releia o que já leu.** `--refresh-after-days 7` (padrão) faz um garimpo
+  repetido custar quase nada.
+- **Sem etapa `seller`, nenhum anúncio custa JavaScript.** Se qualidade de
+  vendedor não é decisiva pra você, tire a etapa e o run inteiro fica em 1
+  requisição por anúncio.
+- **Fatie e espalhe.** `--max-minutes 45` + retomar depois é mais seguro que uma
+  varredura longa contínua: limite de taxa é por janela, e uma pausa real conta
+  mais que um gotejar lento.
+- `--pause-every` / `--pause-for` para gaps longos dentro do próprio run.
+
+**Nunca:** trocar de IP/proxy, randomizar fingerprint, resolver captcha. Isso é
+evasão, não boa vizinhança — e é o que transforma um limite temporário de taxa em
+bloqueio de verdade. Se a OLX disser não, a resposta é voltar depois.
 
 ## Quando bloquear
 

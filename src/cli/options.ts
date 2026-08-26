@@ -60,6 +60,11 @@ export const CLI_OPTIONS = {
   channel: { type: 'string' },
   headed: { type: 'boolean' },
   'no-block-assets': { type: 'boolean' },
+  gentle: { type: 'boolean' },
+  force: { type: 'boolean' },
+  'pause-every': { type: 'string' },
+  'pause-for': { type: 'string' },
+  'refresh-after-days': { type: 'string' },
   json: { type: 'boolean' },
   quiet: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -217,6 +222,26 @@ export const buildProfile = (values: CliValues): Profile => {
   const wantsGems =
     values['no-gems'] === true ? false : values.gems === true ? true : base.gems.enabled;
 
+  /**
+   * For when finishing today matters less than never being blocked. Roughly one
+   * request every half-minute, one page at a time, five minutes of silence every
+   * hour of work, and ten minutes off at the first sign of a refusal.
+   */
+  const gentle =
+    values.gentle === true
+      ? {
+          startRequestsPerMinute: 2,
+          minRequestsPerMinute: 0.5,
+          maxRequestsPerMinute: 4,
+          concurrency: 1,
+          jitterMs: 8000,
+          cooldownSeconds: 600,
+          haltAfterConsecutiveBlocks: 2,
+          pauseEveryRequests: 60,
+          pauseForSeconds: 300,
+        }
+      : {};
+
   return ProfileSchema.parse({
     ...base,
     name: values.name ? String(values.name) : base.name,
@@ -228,6 +253,7 @@ export const buildProfile = (values: CliValues): Profile => {
     stages,
     pacing: {
       ...base.pacing,
+      ...gentle,
       ...(num(values, 'rpm') === undefined ? {} : { startRequestsPerMinute: num(values, 'rpm') }),
       ...(num(values, 'max-rpm') === undefined
         ? {}

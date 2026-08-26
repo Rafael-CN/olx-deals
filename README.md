@@ -24,8 +24,10 @@ npm install && npm run build && npm link
 npx playwright install chromium
 ```
 
-If the bundled Chromium will not launch, pass `--channel chrome` to use the Chrome
-already installed on the machine.
+Playwright's default headless mode needs a separate `chromium_headless_shell`
+download, which is easy to end up without. The launcher tries the shell, then the
+full bundled Chromium, then the system Chrome and Edge, and says which it used —
+so a missing shell is not a hard failure. `--channel chrome` forces a choice.
 
 ## Use
 
@@ -99,28 +101,62 @@ The rest were S22, S22+, S21 Ultra, S23 Ultra, cases and screen protectors. That
 what `--require` and `--reject` are for, and getting them right matters more than
 any other setting.
 
-### Cloudflare is the real bottleneck
+### Cloudflare is the real bottleneck, and a browser is the wrong client
 
-Blocks arrive as 403 across the whole domain, by IP. Two things follow.
+Blocks arrive as 403 across the whole domain, by IP. Everything about the
+transport follows from that.
 
-A refused page still parses — it just has no listing cards on it — so without a
-check it reads as "nothing matched", which is the one answer a caller cannot tell
-apart from the truth. Every navigation checks its status; 403 and 429 are never
-retried, because the backoff here is seconds while a block lasts minutes and
-retrying only adds to the traffic that caused it.
+**Opening a page is not one request.** The document arrives, then the Next.js
+chunks, then analytics, then the ad slots, then the page's own API calls — dozens
+of hits, many to olx.com.br, for every ad read. Charging that as "one request" is
+how a run that looks gentle gets rate-limited in a minute.
 
-And the request rate is *found*, not configured: it rises by 1 rpm per clean
-stretch and is halved on every block, then the run halts after four in a row with
-everything saved. Deliberately probing for the threshold would mean hammering
-someone else's servers to learn a number that is neither published nor stable.
+So the collector does not open pages. It fetches the HTML over HTTP — one request,
+sharing the browser context's cookies — and renders it in a second context with
+JavaScript disabled and every route aborted, which gives the same selectors a real
+DOM for free. The search page server-renders all fifty cards and the ad page
+server-renders its schema.org block, so this costs nothing in coverage.
 
-### One request buys 50 cards or 1 detail
+The single thing not in the HTML is the seller card, which hydrates on the client.
+A full page load is therefore spent per ad, and only when a stage will actually
+read the seller. A profile with no seller gate never runs JavaScript at all.
+
+**A refused page still parses** — it just has no cards on it — so without a check
+it reads as "nothing matched", the one answer a caller cannot tell apart from the
+truth. Status is always checked; 403 and 429 are never retried.
+
+**The rate is found, not configured.** It rises by 1 rpm per clean stretch and is
+cut on every block, the cooldown doubles per consecutive refusal, and the run
+halts after three with everything saved. A published `Crawl-delay` lowers the
+ceiling and never raises it. Being blocked is remembered *between* invocations, so
+the next command refuses to start early instead of arguing with the edge — that is
+what turns a rate limit into a real ban. Deliberately probing for the threshold
+would mean hammering someone else's servers for a number that is neither published
+nor stable.
+
+For when finishing today matters less than never being blocked:
+
+```bash
+garimpo hunt --profile perfil.json --gentle
+```
+
+Roughly 2 rpm, one page at a time, a five-minute sit-down every 60 requests, ten
+minutes of silence at the first refusal. A statewide sweep takes hours. That is
+the trade.
+
+There is no proxy rotation, fingerprint randomisation or challenge solving here,
+and there will not be. Those are evasion rather than good manners, and evasion is
+what escalates a temporary limit into a permanent one.
+
+### One request buys 50 cards or 1 ad page
 
 That 50× asymmetry is the whole economy of the tool. Cheap filters (price, title,
 photos, recency) run on search cards before any ad page is fetched; description,
 attributes and seller history only exist on the ad page, so defect and seller
 filters necessarily pay for it. Stages declare which they need, and the pipeline
-puts them in that order rather than trusting the author to.
+puts them in that order rather than trusting the author to. Ad pages already read
+inside `--refresh-after-days` are not read again, so a repeat hunt over a known
+product costs almost nothing.
 
 ### Listing pages ship no stable selectors
 

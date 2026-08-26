@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Browser, BrowserContext, Page, chromium } from 'playwright';
+import { Browser, BrowserContext, Page } from 'playwright';
+import { launchChromium } from './launch.js';
 
 /**
  * The user agent the scrapers have always sent. It is pinned here because it is
@@ -26,6 +27,8 @@ export interface SessionOptions {
    * browser. Turn it off if blocks persist.
    */
   readonly blockAssets?: boolean | undefined;
+  /** Told which Chromium was actually used, since it is discovered not chosen. */
+  readonly onBrowserChosen?: ((using: string) => void) | undefined;
 }
 
 /**
@@ -44,6 +47,11 @@ export class BrowserSession {
   private constructor(
     private readonly browser: Browser,
     private readonly context: BrowserContext,
+    /**
+     * A second context with JavaScript off and every route aborted. It exists
+     * only to give already-fetched HTML a DOM, so it can never make a request.
+     */
+    readonly parserContext: BrowserContext,
     private readonly statePath: string,
     pages: Page[]
   ) {
@@ -54,11 +62,12 @@ export class BrowserSession {
     const statePath = join(options.dataDir, 'browser-state.json');
     mkdirSync(dirname(statePath), { recursive: true });
 
-    const browser = await chromium.launch({
+    const { browser, using } = await launchChromium({
       headless: options.headless ?? true,
-      ...(options.channel ? { channel: options.channel } : {}),
+      channel: options.channel,
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     });
+    options.onBrowserChosen?.(using);
 
     const context = await browser.newContext({
       userAgent: OLX_USER_AGENT,
@@ -77,11 +86,21 @@ export class BrowserSession {
       });
     }
 
+    // Parsing-only context. JavaScript is off and everything is aborted, so a
+    // page here renders fetched HTML without contacting anyone — which is the
+    // whole point: the markup already contains what we came for.
+    const parserContext = await browser.newContext({
+      javaScriptEnabled: false,
+      userAgent: OLX_USER_AGENT,
+      locale: 'pt-BR',
+    });
+    await parserContext.route('**/*', route => route.abort());
+
     const pages = await Promise.all(
       Array.from({ length: Math.max(1, options.pages) }, () => context.newPage())
     );
 
-    return new BrowserSession(browser, context, statePath, pages);
+    return new BrowserSession(browser, context, parserContext, statePath, pages);
   }
 
   /**
@@ -91,6 +110,11 @@ export class BrowserSession {
    */
   get playwrightBrowser(): Browser {
     return this.browser;
+  }
+
+  /** The cookie-bearing context, for HTTP fetches that must look like this session. */
+  get httpContext(): BrowserContext {
+    return this.context;
   }
 
   /** Checks out a page, runs the work, and returns the page to the pool. */
@@ -119,6 +143,7 @@ export class BrowserSession {
 
   async close(): Promise<void> {
     await this.saveState();
+    await this.parserContext.close().catch(() => {});
     await this.context.close().catch(() => {});
     await this.browser.close().catch(() => {});
   }
