@@ -260,6 +260,26 @@ Use isso para:
 - **Perceber que o corte está errado.** Se a banda 90-100 está vazia, sua busca
   não achou o produto e nenhum ajuste de preço vai resolver.
 
+### Passo 4c — depois de enriquecer, pergunte o que o acervo ensinou
+
+```bash
+garimpo insights --run <id>
+```
+
+Zero requisições. Devolve duas coisas que a ferramenta aprendeu sozinha:
+
+- **Taxonomia de produto** a partir dos campos `Marca`/`Modelo` da própria OLX.
+  Diz qual modelo domina o acervo, quais irmãos apareceram, e **sugere o
+  `--demote`** que você não precisou escrever. É assim que "10S Pro" se separa de
+  "10 Pro" — no título eles são idênticos, só o campo estruturado distingue.
+- **Clusters de foto.** Anúncios que compartilham id de foto são o mesmo item:
+  `relist` (mesmo vendedor republicando — **não está vendendo, logo negociável**),
+  `multi-unit` (loja com várias unidades) ou `cross-seller` (a mesma foto em
+  contas diferentes — cheque antes de falar com alguém).
+
+Repasse a sugestão de `--demote` ao usuário: rodar de novo com ela melhora o
+acervo sem custo de requisição na coleta seguinte.
+
 ### Passo 5 — leia resultados sem estourar o contexto
 
 **Regra dura: nunca imprima linhas cruas.** Milhares de anúncios não cabem numa
@@ -394,8 +414,11 @@ Rode `garimpo --help`. As que mais importam:
 | `--run <id>` | retomar |
 | `--json` | saída estruturada |
 
-E o comando que não gasta requisição nenhuma:
+Comandos que não gastam requisição nenhuma:
 
 ```bash
 garimpo candidates --run <id> --min-match 70 --top 20 [--json]
+garimpo insights   --run <id> [--json]
 ```
+
+

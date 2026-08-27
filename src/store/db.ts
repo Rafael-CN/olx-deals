@@ -5,6 +5,7 @@ import { Listing } from '../core/types.js';
 import { Profile } from '../config/profile.js';
 import { PlannedShard } from '../collect/shard.js';
 import { parseBrl } from '../scrapers/olx/br-parsers.js';
+import { photoIdsFrom } from '../triage/identity.js';
 
 /**
  * The collected corpus, on disk.
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS ad_details (
   attributes_json  TEXT,
   seller_json      TEXT,
   image_count      INTEGER,
+  images_json      TEXT,
   canonical_url    TEXT,
   published_at     TEXT
 );
@@ -381,8 +383,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO ad_details (ad_id, fetched_at, price, description, category, attributes_json,
-                                 seller_json, image_count, canonical_url, published_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 seller_json, image_count, images_json, canonical_url, published_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(ad_id) DO UPDATE SET
            fetched_at = excluded.fetched_at,
            price = excluded.price,
@@ -391,6 +393,7 @@ export class Store {
            attributes_json = excluded.attributes_json,
            seller_json = excluded.seller_json,
            image_count = excluded.image_count,
+           images_json = excluded.images_json,
            canonical_url = excluded.canonical_url,
            published_at = excluded.published_at`
       )
@@ -403,6 +406,7 @@ export class Store {
         listing.attributes ? JSON.stringify(listing.attributes) : null,
         listing.seller ? JSON.stringify(listing.seller) : null,
         listing.imageUrls?.length ?? null,
+        listing.imageUrls ? JSON.stringify(listing.imageUrls) : null,
         listing.url,
         listing.publishedAt?.toISOString() ?? null
       );
@@ -485,6 +489,60 @@ export class Store {
         options.maxPrice ?? null,
         options.limit ?? 50
       ) as never;
+  }
+
+  /** Match score per ad id, for code that needs it outside a listing query. */
+  matchScores(runId: string): Map<string, number> {
+    const rows = this.db
+      .prepare(`SELECT ad_id, match_score FROM run_ads WHERE run_id = ?`)
+      .all(runId) as Array<{ ad_id: string; match_score: number }>;
+    return new Map(rows.map(row => [row.ad_id, row.match_score]));
+  }
+
+  /**
+   * Everything the photo-identity pass needs, in one read.
+   *
+   * The card's thumbnail and the ad page's full-size images carry the same photo
+   * ids, so both are worth having: an ad that was never enriched still
+   * contributes its one card photo, which is often enough to catch a relist.
+   */
+  identityMembers(runId: string): Array<{
+    adId: string;
+    photoIds: string[];
+    sellerName?: string | undefined;
+    title?: string | undefined;
+    price?: number | undefined;
+    publishedAt?: Date | undefined;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT a.id, a.title, a.image_url, a.published_at,
+                COALESCE(d.price, a.price) AS price,
+                d.seller_json, d.images_json
+         FROM ads a
+         JOIN run_ads r ON r.ad_id = a.id
+         LEFT JOIN ad_details d ON d.ad_id = a.id
+         WHERE r.run_id = ?`
+      )
+      .all(runId) as Array<Record<string, unknown>>;
+
+    return rows.map(row => {
+      const detailImages = row['images_json']
+        ? (JSON.parse(String(row['images_json'])) as string[])
+        : [];
+      const seller = row['seller_json']
+        ? (JSON.parse(String(row['seller_json'])) as { name?: string })
+        : undefined;
+
+      return {
+        adId: String(row['id']),
+        photoIds: photoIdsFrom([String(row['image_url'] ?? '') || undefined, ...detailImages]),
+        sellerName: seller?.name,
+        title: row['title'] ? String(row['title']) : undefined,
+        price: row['price'] === null ? undefined : Number(row['price']),
+        publishedAt: row['published_at'] ? new Date(String(row['published_at'])) : undefined,
+      };
+    });
   }
 
   /** How the run's ads are distributed across match-score bands. */

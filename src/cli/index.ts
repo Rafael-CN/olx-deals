@@ -23,7 +23,9 @@ import {
 } from '../collect/runner.js';
 import { Candidate, triage, Verdict } from '../triage/stages.js';
 import { requiredSellerFields } from '../triage/seller.js';
-import { rankGems } from '../triage/gems.js';
+import { rankGemsByCohort } from '../triage/gems.js';
+import { buildTaxonomy, TaxonomyFacts } from '../triage/taxonomy.js';
+import { clusterByPhoto, duplicateAdIds, relistCountFor } from '../triage/identity.js';
 import { SellerInfo } from '../core/types.js';
 import { CliValues, buildProfile, parseCommandLine, profileTemplate } from './options.js';
 
@@ -41,6 +43,7 @@ Commands
   gems        rank survivors against the going rate for the product
   report      print a run's funnel, prices and top finds
   candidates  browse the ranked candidate base (no requests, no site contact)
+  insights    what the corpus taught: product taxonomy and photo-identity clusters
   runs        list stored runs
   template    print a fully populated profile JSON to edit
 
@@ -197,14 +200,28 @@ const runTriage = (
 const runGems = (store: Store, id: string, profile: Profile) => {
   const rows = store.detailsFor(id);
   const now = new Date();
+  const scores = store.matchScores(id);
+
+  // Identity before statistics: one unit relisted five times is five rows moving
+  // the very median it will then be judged against.
+  const clusters = clusterByPhoto(store.identityMembers(id));
+  const duplicates = duplicateAdIds(clusters);
+  const relists = relistCountFor(clusters);
 
   const entries = rows.map(row => {
     const candidate = toCandidate(row, true);
     const verdict = triage(candidate, profile.stages, now);
-    return { candidate, severity: verdict.severity, clean: verdict.passed };
+    const facts: TaxonomyFacts = {
+      adId: row.id,
+      ...(candidate.attributes ? { attributes: candidate.attributes } : {}),
+      matchScore: scores.get(row.id) ?? 0,
+      ...(candidate.price === undefined ? {} : { price: candidate.price }),
+    };
+    return { candidate, severity: verdict.severity, clean: verdict.passed, facts };
   });
 
-  const { reference, assessments } = rankGems(entries, profile.gems, now);
+  const taxonomy = buildTaxonomy(entries.map(entry => entry.facts));
+  const { assessments, overall } = rankGemsByCohort(entries, profile.gems, duplicates, now);
 
   store.saveGems(
     id,
@@ -213,14 +230,66 @@ const runGems = (store: Store, id: string, profile: Profile) => {
       score: assessment.score,
       discountPct: assessment.discountPct,
       robustZ: assessment.robustZ,
-      median: reference.median,
-      referenceSize: reference.size,
+      median: overall.median,
+      referenceSize: assessment.cohortSize ?? overall.size,
       verdict: assessment.verdict,
-      reasons: assessment.reasons,
+      reasons: [
+        ...assessment.reasons,
+        ...(relists.get(assessment.adId)
+          ? [`republished ${relists.get(assessment.adId)}x — this ad has not been selling`]
+          : []),
+      ],
     }))
   );
 
-  return { reference, assessments, cleanCount: entries.filter(entry => entry.clean).length };
+  return {
+    reference: overall,
+    assessments,
+    taxonomy,
+    clusters,
+    duplicates,
+    cleanCount: entries.filter(entry => entry.clean).length,
+  };
+};
+
+/** Reports what the run learned about the product, not only how many gems it found. */
+const logGemOutcome = (outcome: ReturnType<typeof runGems>): void => {
+  const { reference, assessments, taxonomy, clusters, duplicates, cleanCount } = outcome;
+
+  if (taxonomy.target) {
+    const demote =
+      taxonomy.suggestedDemotions.length > 0
+        ? `, suggest --demote ${JSON.stringify(taxonomy.suggestedDemotions.join(','))}`
+        : '';
+    log(
+      `taxonomy: corpus is mostly ${taxonomy.target.label} ` +
+        `(${taxonomy.target.count} ads, median ${money(Math.round(taxonomy.target.medianPrice))}); ` +
+        `${taxonomy.siblings.length} other model(s) present${demote}`
+    );
+  } else if (assessments.length > 0) {
+    log('no Modelo attribute on the enriched ads — cohorts fall back to the whole corpus');
+  }
+
+  if (clusters.length > 0) {
+    const kinds = clusters.reduce<Record<string, number>>((acc, cluster) => {
+      acc[cluster.kind] = (acc[cluster.kind] ?? 0) + 1;
+      return acc;
+    }, {});
+    log(
+      `photo identity: ${clusters.length} cluster(s) — ` +
+        Object.entries(kinds)
+          .map(([kind, n]) => `${n} ${kind}`)
+          .join(', ') +
+        `; ${duplicates.size} duplicate row(s) held out of the price reference`
+    );
+  }
+
+  log(
+    `reference: median ${money(Math.round(reference.median))} over ${reference.size} clean ads ` +
+      `(of ${cleanCount} passing) — ${assessments.filter(a => a.verdict === 'gem').length} gem(s), ` +
+      `${assessments.filter(a => a.verdict === 'watch').length} to watch, ` +
+      `${assessments.filter(a => a.verdict === 'suspect').length} suspect`
+  );
 };
 
 const money = (value: number | null | undefined): string =>
@@ -338,6 +407,66 @@ const main = async (): Promise<number> => {
       return 0;
     }
 
+    if (command === 'insights') {
+      const id = values.run ? String(values.run) : store.latestRunId();
+      if (!id) {
+        log('no runs stored yet');
+        return 1;
+      }
+
+      const scores = store.matchScores(id);
+      const facts: TaxonomyFacts[] = store.detailsFor(id).map(row => ({
+        adId: row.id,
+        ...(row.attributes_json
+          ? { attributes: JSON.parse(row.attributes_json) as Record<string, string> }
+          : {}),
+        matchScore: scores.get(row.id) ?? 0,
+        ...(row.price === null ? {} : { price: row.price }),
+      }));
+
+      const taxonomy = buildTaxonomy(facts);
+      const clusters = clusterByPhoto(store.identityMembers(id));
+
+      if (values.json === true) {
+        process.stdout.write(`${JSON.stringify({ run: id, taxonomy, clusters }, null, 2)}
+`);
+        return 0;
+      }
+
+      const out = (line: string) =>
+        process.stdout.write(`${line}
+`);
+      out(`
+What ${id} learned`);
+      out(`
+  product taxonomy (from OLX own Marca/Modelo fields, ${facts.length} enriched ads)`);
+      if (taxonomy.models.length === 0) {
+        out('    nothing yet — no ad page has been read, so there is no Modelo to read');
+      } else {
+        for (const model of taxonomy.models) {
+          const mark = model.label === taxonomy.target?.label ? '->' : '  ';
+          out(
+            `    ${mark} ${model.label.padEnd(34)} ${String(model.count).padStart(4)} ads  ` +
+              `median ${money(Math.round(model.medianPrice)).padEnd(11)} match ${model.meanMatch.toFixed(0)}`
+          );
+        }
+        if (taxonomy.suggestedDemotions.length > 0) {
+          out(`
+    suggested: --demote ${JSON.stringify(taxonomy.suggestedDemotions.join(','))}`);
+        }
+      }
+
+      out(`
+  photo identity (${clusters.length} cluster(s), computed from stored photo ids)`);
+      for (const cluster of clusters.slice(0, Number(values.top ?? 15))) {
+        out(`    [${cluster.kind}] ${cluster.adIds.length} ads — ${cluster.reason}`);
+        out(`      ${cluster.adIds.join(', ')}`);
+      }
+      if (clusters.length === 0) out('    none — every listing has photos of its own');
+      out('');
+      return 0;
+    }
+
     if (command === 'candidates') {
       const id = values.run ? String(values.run) : store.latestRunId();
       if (!id) {
@@ -417,13 +546,7 @@ const main = async (): Promise<number> => {
             `detail triage: ${details.filter(v => v.passed).length}/${details.length} passed`
         );
       } else {
-        const { reference, assessments, cleanCount } = runGems(store, id, active);
-        log(
-          `reference: median ${money(Math.round(reference.median))} from ${reference.size} clean ads ` +
-            `(of ${cleanCount} passing) — ${assessments.filter(a => a.verdict === 'gem').length} gem(s), ` +
-            `${assessments.filter(a => a.verdict === 'watch').length} to watch, ` +
-            `${assessments.filter(a => a.verdict === 'suspect').length} suspect`
-        );
+        logGemOutcome(runGems(store, id, active));
       }
       report(store, id, Number(values.top ?? 15), values.json === true);
       return 0;
@@ -561,11 +684,7 @@ const main = async (): Promise<number> => {
         );
 
         if (profile.gems.enabled) {
-          const { reference, assessments } = runGems(store, id, profile);
-          context.log(
-            `median ${money(Math.round(reference.median))} from ${reference.size} clean ads — ` +
-              `${assessments.filter(a => a.verdict === 'gem').length} gem(s)`
-          );
+          logGemOutcome(runGems(store, id, profile));
         }
       }
 

@@ -2,6 +2,7 @@ import { GemConfig } from '../config/profile.js';
 import { Candidate } from './stages.js';
 import { Severity } from './defects.js';
 import { scoreSeller } from './seller.js';
+import { CohortLevel, TaxonomyFacts, chooseCohort, describeCohort } from './taxonomy.js';
 
 export interface PriceReference {
   readonly median: number;
@@ -24,6 +25,10 @@ export interface GemAssessment {
   readonly discountPct: number;
   readonly robustZ: number;
   readonly reasons: string[];
+  /** Which stratum the price was judged against, when cohorts were used. */
+  readonly cohortLevel?: CohortLevel | undefined;
+  readonly cohortLabel?: string | undefined;
+  readonly cohortSize?: number | undefined;
 }
 
 export const percentile = (sorted: readonly number[], fraction: number): number => {
@@ -216,6 +221,69 @@ export const assessGem = (
  * 'all', unless asked otherwise: including them lowers the median, which raises
  * the bar every genuine bargain has to clear, which is precisely backwards.
  */
+export interface CohortEntry {
+  readonly candidate: Candidate;
+  readonly severity: Severity;
+  readonly clean: boolean;
+  readonly facts: TaxonomyFacts;
+}
+
+/**
+ * Ranks candidates against the narrowest comparable group each one has, rather
+ * than against one median for the whole search.
+ *
+ * This is the correction to the naive version below. A single median mixes a
+ * 10 Pro with a 10 Air and a 10S Pro, so "40% under" stops meaning "a bargain"
+ * and starts meaning "a cheaper model" — with no way to tell which from the
+ * number. Comparing each ad to its own model, storage and condition, and saying
+ * out loud which stratum it settled for, makes the discount an actual claim.
+ *
+ * `duplicates` are relists collapsed by the photo-identity pass: the same unit
+ * posted five times is one phone, and counting it five times moves the median it
+ * is then judged against.
+ */
+export const rankGemsByCohort = (
+  entries: readonly CohortEntry[],
+  config: GemConfig,
+  duplicates: ReadonlySet<string> = new Set(),
+  now: Date = new Date()
+): { assessments: GemAssessment[]; overall: PriceReference } => {
+  const eligible = entries.filter(entry => !duplicates.has(entry.candidate.id));
+  const pool = config.reference === 'clean' ? eligible.filter(entry => entry.clean) : eligible;
+  const poolFacts = pool.map(entry => entry.facts);
+
+  const overall = buildReference(
+    pool
+      .map(entry => entry.candidate.price)
+      .filter((price): price is number => price !== undefined && price > 0)
+  );
+
+  const assessments = entries.map(entry => {
+    const cohort = chooseCohort(entry.facts, poolFacts, config.minReferenceSize);
+    const reference = buildReference(
+      cohort.members
+        .map(member => member.price)
+        .filter((price): price is number => price !== undefined && price > 0)
+    );
+
+    const assessment = assessGem(entry.candidate, reference, config, entry.severity, now);
+    const label = describeCohort(cohort, entry.facts);
+
+    return {
+      ...assessment,
+      cohortLevel: cohort.level,
+      cohortLabel: label,
+      cohortSize: cohort.members.length,
+      reasons: [`compared against ${label} (${cohort.members.length} ads)`, ...assessment.reasons],
+    };
+  });
+
+  return {
+    assessments: assessments.sort((a, b) => b.score - a.score || a.price - b.price),
+    overall,
+  };
+};
+
 export const rankGems = (
   candidates: ReadonlyArray<{ candidate: Candidate; severity: Severity; clean: boolean }>,
   config: GemConfig,
