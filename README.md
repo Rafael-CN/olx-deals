@@ -106,6 +106,24 @@ token length so matching "redmagic" counts for four times matching "10", with a
 bonus for the query appearing as one phrase and a heavy demotion for accessory and
 sibling-model words. Nothing is dropped.
 
+Every match lands on a token boundary, in both directions. A query token counts
+when the title carries it as a word, when one title word splits *entirely* into
+query tokens ("RedMagic10Pro"), or when consecutive title words spell it out
+("Red Magic"). Nothing ever matches part of a word, which is the rule that keeps
+digits honest: "10" must not be answered by "10S".
+
+That replaced a substring match which cost more than it bought. Measured on real
+titles, "iPhone 13 128GB promoção" scored 93 for "iphone 13 pro" — identical to a
+genuine one — because "pro" sits inside "promocao"; "Nubia Redmagic 10S Pro"
+scored 93 for "redmagic 10 pro"; and "Red Magic 10 Pro", which is exactly the
+phone asked for, scored 39 and fell under every threshold this README suggests.
+The two reasons the old code gave for matching substrings — that "pro" must match
+"pró" and "512gb" must match "512GB/16GB" — are both handled by folding accents
+and tokenising the title, so nothing was traded away for it.
+
+Scores therefore mean something different than they did, and a `--min-match`
+saved in an old profile is not the cut it was.
+
 That matters beyond tidiness. A badly titled listing is *under-found by everyone*,
 which is exactly why it can sit below the going rate. In the same run, the cheapest
 ad scoring 90+ was R$ 3.000, while a listing titled just "Celular Redmagic" scored

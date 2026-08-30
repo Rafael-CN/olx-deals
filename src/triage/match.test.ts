@@ -113,3 +113,50 @@ describe('scoreBestMatch', () => {
     expect(scoreBestMatch('RedMagic 10 Pro', []).score).toBe(0);
   });
 });
+
+describe('scoreMatch matches on token boundaries', () => {
+  it('stops a word that merely begins with a query token from scoring as one', () => {
+    // Measured before the change: this scored 93 for "iphone 13 pro", the same
+    // as a genuine one, because "pro" is a substring of "promocao" once accents
+    // are folded. A shopper filtering at 90 got both.
+    const decoy = scoreMatch('iPhone 13 128GB promoção imperdível', 'iphone 13 pro');
+    const real = scoreMatch('iPhone 13 Pro 128GB', 'iphone 13 pro');
+
+    expect(decoy.missingTokens).toContain('pro');
+    expect(real.score).toBe(100);
+    expect(decoy.score).toBeLessThan(real.score);
+  });
+
+  it('keeps a neighbouring model apart when only a digit separates them', () => {
+    const sibling = scoreMatch('Nubia Redmagic 10S Pro 512GB', 'redmagic 10 pro');
+    const real = scoreMatch('Redmagic 10 Pro 512GB', 'redmagic 10 pro');
+
+    expect(sibling.missingTokens).toContain('10');
+    expect(real.score).toBe(100);
+    expect(sibling.score).toBeLessThan(real.score);
+  });
+
+  it('reads a brand the seller spelled apart', () => {
+    // The false negative that came with the false positives: this scored 39,
+    // which is under every threshold the skill suggests, for an ad that is
+    // exactly the product asked for.
+    expect(scoreMatch('Red Magic 10 Pro 512GB', 'redmagic 10 pro').missingTokens).toEqual([]);
+    expect(scoreMatch('Red Magic 10 Pro 512GB', 'redmagic 10 pro').score).toBeGreaterThan(85);
+  });
+
+  it('reads a title written as one word', () => {
+    expect(scoreMatch('RedMagic10Pro 256GB', 'redmagic 10 pro').missingTokens).toEqual([]);
+  });
+
+  it('still folds accents and splits a joined spec', () => {
+    // The two cases the old substring match existed for. Both survive: accents
+    // are folded before tokenising, and the title is tokenised on punctuation.
+    expect(scoreMatch('Redmagic 10 Pró', 'redmagic 10 pro').missingTokens).toEqual([]);
+    expect(scoreMatch('Samsung 512GB/16GB S22 Ultra', 's22 ultra 512gb').missingTokens).toEqual([]);
+  });
+
+  it('does not let a partial digit token through in either direction', () => {
+    expect(scoreMatch('Galaxy S22 512GB', 's22 ultra').missingTokens).toContain('ultra');
+    expect(scoreMatch('Galaxy S225 Ultra', 's22 ultra').missingTokens).toContain('s22');
+  });
+});

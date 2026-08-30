@@ -46,6 +46,41 @@ export const scoreMatch = (
     };
   }
 
+  const titleTokens = tokenise(title);
+  const present = new Set(titleTokens);
+  // Where in the title each query token was found, for the in-order bonus.
+  const foundAt = new Map<string, number>();
+
+  const record = (token: string, position: number) => {
+    if (!foundAt.has(token)) foundAt.set(token, position);
+  };
+
+  for (const [position, token] of titleTokens.entries()) {
+    if (present.has(token)) record(token, position);
+  }
+  for (const token of tokens) {
+    const position = titleTokens.indexOf(token);
+    if (position >= 0) record(token, position);
+  }
+
+  // "RedMagic10Pro" written as one word. A title token counts only if it splits
+  // *entirely* into query tokens, which is what keeps this exact: "promocao"
+  // begins with "pro" and splits into "pro" + "mocao", so it is not a match.
+  for (const [position, titleToken] of titleTokens.entries()) {
+    if (present.has(titleToken) && tokens.includes(titleToken)) continue;
+    for (const token of segmentInto(titleToken, tokens)) record(token, position);
+  }
+
+  // The same thing from the other side: "redmagic" written as "Red Magic". A
+  // query token counts when consecutive title tokens spell it out completely.
+  for (let start = 0; start < titleTokens.length; start += 1) {
+    let joined = '';
+    for (let end = start; end < Math.min(start + MAX_JOIN, titleTokens.length); end += 1) {
+      joined += titleTokens[end];
+      if (end > start && tokens.includes(joined)) record(joined, start);
+    }
+  }
+
   const matched: string[] = [];
   const missing: string[] = [];
   const positions: number[] = [];
@@ -53,17 +88,15 @@ export const scoreMatch = (
   let weightTotal = 0;
 
   for (const token of tokens) {
-    // Substring rather than word-boundary matching, deliberately: after accent
-    // folding "pro" has to match "pró", and "512gb" has to match "512GB/16GB".
-    const at = haystack.indexOf(token);
     weightTotal += token.length;
-    if (at >= 0) {
-      matched.push(token);
-      positions.push(at);
-      weightMatched += token.length;
-    } else {
+    const position = foundAt.get(token);
+    if (position === undefined) {
       missing.push(token);
+      continue;
     }
+    matched.push(token);
+    positions.push(position);
+    weightMatched += token.length;
   }
 
   const coverage = weightTotal === 0 ? 0 : weightMatched / weightTotal;
@@ -103,6 +136,44 @@ export const scoreMatch = (
     inOrder,
     demotedBy,
   };
+};
+
+/** How many consecutive title tokens may be joined to spell one query token. */
+const MAX_JOIN = 4;
+
+/**
+ * The query tokens a single title token spells out, when it spells out nothing
+ * else.
+ *
+ * Every match this module makes lands on a token boundary. Substring matching
+ * was deliberate once — the comment justified it with "pro" needing to match
+ * "pró" and "512gb" needing to match "512GB/16GB" — but accent folding already
+ * handles the first and tokenising the title already handles the second, while
+ * the substring bought two failures nobody wanted: "iPhone 13 128GB promocao"
+ * scored the same as a real iPhone 13 Pro, and so did "Nubia Redmagic 10S Pro"
+ * against "redmagic 10 pro". A digit that blurs is worse than a word that does.
+ */
+const segmentInto = (titleToken: string, queryTokens: readonly string[]): string[] => {
+  const usable = queryTokens.filter(token => token.length >= 2);
+  if (usable.length === 0) return [];
+
+  const reached: Array<string[] | undefined> = Array(titleToken.length + 1).fill(undefined);
+  reached[0] = [];
+
+  for (let at = 0; at < titleToken.length; at += 1) {
+    const sofar = reached[at];
+    if (sofar === undefined) continue;
+    for (const token of usable) {
+      const next = at + token.length;
+      if (next > titleToken.length) continue;
+      if (!titleToken.startsWith(token, at)) continue;
+      if (reached[next] === undefined) reached[next] = [...sofar, token];
+    }
+  }
+
+  const path = reached[titleToken.length];
+  // One token is not a split; that case is plain equality and already handled.
+  return path !== undefined && path.length > 1 ? path : [];
 };
 
 const tokenise = (query: string): string[] =>
