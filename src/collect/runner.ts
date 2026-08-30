@@ -146,7 +146,15 @@ const fetchHtml = async (
   }
 
   if (outcome.status >= 400) {
-    context.governor.reportError();
+    // Not a refusal of us — a 503 is the server saying it is unavailable, not
+    // that we are unwelcome — so this does not poison the block memory. But if
+    // it named a wait, that wait is obeyed.
+    context.governor.reportError(outcome.retryAfterSeconds);
+    if (outcome.retryAfterSeconds !== undefined && outcome.retryAfterSeconds > 0) {
+      context.log(
+        `olx.com.br answered ${outcome.status} and asked for ${outcome.retryAfterSeconds}s — waiting`
+      );
+    }
     throw new Error(`olx.com.br answered ${outcome.status} for ${url}`);
   }
 

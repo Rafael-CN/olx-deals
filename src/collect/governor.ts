@@ -160,11 +160,27 @@ export class RateGovernor {
     }
   }
 
-  /** A timeout or a transport error: worth slowing for, but not a refusal. */
-  reportError(): void {
+  /**
+   * A timeout, a transport error, or a status that is not a refusal of us.
+   *
+   * Worth slowing for, but not a block: it does not escalate the cooldown, does
+   * not count toward the halt, and is not remembered between invocations.
+   *
+   * A `Retry-After` is honoured whatever the status carried it. The standard
+   * "please pause" signal is a 503 with that header, and routing it here rather
+   * than only through reportBlocked meant the politest thing a server can say
+   * was handled worse than a 429 — a flat rate cut, and the stated wait ignored.
+   */
+  reportError(retryAfterSeconds?: number): void {
     this.errors += 1;
     this.cleanStreak = 0;
     this.rpm = Math.max(this.rpm * 0.85, this.pacing.minRequestsPerMinute);
+
+    if (retryAfterSeconds === undefined || retryAfterSeconds <= 0) return;
+    const seconds = Math.min(retryAfterSeconds, this.pacing.maxCooldownSeconds);
+    const cooldown = seconds * 1000;
+    this.cooldownMs += cooldown;
+    this.nextAllowedAt = Math.max(this.nextAllowedAt, this.now() + cooldown);
   }
 
   get stats(): GovernorStats {

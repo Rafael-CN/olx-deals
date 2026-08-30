@@ -62,6 +62,39 @@ describe('RateGovernor', () => {
     expect(slept.at(-1)).toBe(60_000);
   });
 
+  it('waits out a Retry-After that came with something other than a block', async () => {
+    const { governor, slept } = build({ startRequestsPerMinute: 60, maxCooldownSeconds: 900 });
+
+    // The standard "please pause" is a 503 with Retry-After. Routing it only
+    // through reportBlocked meant the politest thing a server can say was
+    // handled worse than a 429: a flat rate cut, and the stated wait ignored.
+    governor.reportError(120);
+
+    await governor.acquire();
+    expect(slept.at(-1)).toBe(120_000);
+  });
+
+  it('does not let a Retry-After outstay the cooldown ceiling', async () => {
+    const { governor, slept } = build({ startRequestsPerMinute: 60, maxCooldownSeconds: 300 });
+
+    governor.reportError(9999);
+
+    await governor.acquire();
+    expect(slept.at(-1)).toBe(300_000);
+  });
+
+  it('slows for an error without escalating it into a block', () => {
+    const { governor } = build({ haltAfterConsecutiveBlocks: 2 });
+
+    // An error is not a refusal of us: it must not count toward the halt, or a
+    // flaky connection reads as a ban.
+    governor.reportError(30);
+    governor.reportError(30);
+    governor.reportError(30);
+    expect(governor.stats.blocks).toBe(0);
+    expect(() => governor.reportBlocked()).not.toThrow();
+  });
+
   it('gives up rather than retrying through a sustained block', async () => {
     const { governor } = build({ haltAfterConsecutiveBlocks: 3, minRequestsPerMinute: 1 });
 
