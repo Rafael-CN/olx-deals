@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS shards (
   run_id       TEXT NOT NULL,
   key          TEXT NOT NULL,
+  query        TEXT,
   state        TEXT,
   category     TEXT,
   min_price    INTEGER,
@@ -148,6 +149,18 @@ export interface StoredDetail {
 
 export type ShardStatus = 'pending' | 'running' | 'done' | 'truncated' | 'error';
 
+/**
+ * Columns added to a table after databases were already on disk.
+ *
+ * `CREATE TABLE IF NOT EXISTS` leaves an existing database one column short
+ * instead of saying so, and the corpus is deliberately long-lived — ads are
+ * keyed globally so last week's sweep is this week's head start. Each entry is
+ * applied only when the column is absent, so this runs on every open.
+ */
+const ADDED_COLUMNS: ReadonlyArray<readonly [string, string, string]> = [
+  ['shards', 'query', 'TEXT'],
+];
+
 export class Store {
   private readonly db: DatabaseSync;
 
@@ -158,6 +171,17 @@ export class Store {
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA synchronous = NORMAL');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    for (const [table, column, type] of ADDED_COLUMNS) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+        name: string;
+      }>;
+      if (columns.some(existing => existing.name === column)) continue;
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   close(): void {
@@ -210,8 +234,8 @@ export class Store {
   /** Written once by `plan`; `collect` then walks whatever is still pending. */
   saveShards(runId: string, shards: readonly PlannedShard[]): void {
     const insert = this.db.prepare(
-      `INSERT INTO shards (run_id, key, state, category, min_price, max_price, total_count, truncated, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO shards (run_id, key, query, state, category, min_price, max_price, total_count, truncated, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id, key) DO UPDATE SET total_count = excluded.total_count`
     );
     this.db.exec('BEGIN');
@@ -220,6 +244,7 @@ export class Store {
         insert.run(
           runId,
           shard.key,
+          shard.query ?? null,
           shard.state ?? null,
           shard.category ?? null,
           shard.minPrice ?? null,
@@ -238,6 +263,7 @@ export class Store {
 
   pendingShards(runId: string): Array<{
     key: string;
+    query: string | null;
     state: string | null;
     category: string | null;
     min_price: number | null;
@@ -249,7 +275,7 @@ export class Store {
   }> {
     return this.db
       .prepare(
-        `SELECT key, state, category, min_price, max_price, total_count, pages_done, cards_seen, status
+        `SELECT key, query, state, category, min_price, max_price, total_count, pages_done, cards_seen, status
          FROM shards WHERE run_id = ? AND status IN ('pending', 'running', 'truncated')
          ORDER BY total_count DESC`
       )

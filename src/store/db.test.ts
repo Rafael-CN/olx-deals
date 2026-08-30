@@ -93,6 +93,43 @@ describe('Store', () => {
     expect(store.pendingShards('run-1').map(s => s.key)).toEqual(['rs|all||']);
   });
 
+  it('keeps every phrasing of a slice, and hands each sweep back its own query', () => {
+    store.saveShards('run-1', [
+      {
+        key: 'redmagic 10 pro|rs|all||',
+        query: 'redmagic 10 pro',
+        totalCount: 40,
+        truncated: false,
+        depth: 1,
+        state: 'rs',
+      },
+      {
+        key: 'red magic 10 pro|rs|all||',
+        query: 'red magic 10 pro',
+        totalCount: 30,
+        truncated: false,
+        depth: 1,
+        state: 'rs',
+      },
+      {
+        key: 'nubia redmagic 10|rs|all||',
+        query: 'nubia redmagic 10',
+        totalCount: 20,
+        truncated: false,
+        depth: 1,
+        state: 'rs',
+      },
+    ]);
+
+    const pending = store.pendingShards('run-1');
+    expect(pending).toHaveLength(3);
+    expect(pending.map(shard => shard.query)).toEqual([
+      'redmagic 10 pro',
+      'red magic 10 pro',
+      'nubia redmagic 10',
+    ]);
+  });
+
   it('exposes a shard running tally, so a resumed sweep continues it', () => {
     store.saveShards('run-1', [{ key: 'k', totalCount: 300, truncated: false, depth: 0 }]);
     store.updateShard('run-1', 'k', { pagesDone: 1, cardsSeen: 50 });

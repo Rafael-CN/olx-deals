@@ -122,8 +122,16 @@ garimpo candidates --run <id> --min-match 70 --max-price 3000 --top 20
 
 `--queries` sweeps extra phrasings into the same run — "red magic 10 pro", "nubia
 redmagic 10", "redmagic 10" — because OLX ranks on the words the seller happened
-to type. The sets overlap heavily, so the union costs far less than the sum: four
-nationwide phrasings cost 8 requests and returned 191 ads.
+to type.
+
+Each phrasing is a sweep of its own, and the price is paid in full. An earlier
+version of this README claimed four nationwide phrasings cost 8 requests; that
+number was measured while the feature was broken. Every phrasing was planned and
+probed, but they collided on a shard key that omitted the query, so one row
+survived and the primary query was swept alone — the 8 requests were the probes,
+and the ads came from one phrasing. The sets do overlap, and the store still
+deduplicates by ad id, but that saves storage rather than requests. `plan` prints
+what the corrected sweep costs before any of it is spent.
 
 ### Reading every candidate is optional
 

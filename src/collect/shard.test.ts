@@ -31,6 +31,24 @@ describe('planShards', () => {
     expect(outcome.shards[0]?.truncated).toBe(false);
   });
 
+  it('gives every phrasing its own slice, so none of them collide on storage', async () => {
+    const { probe, seen } = stubProbe(() => 40);
+    const outcome = await planShards(
+      profile({ states: ['rs'], queries: ['red magic 10 pro', 'nubia redmagic 10'] }),
+      probe,
+      limits()
+    );
+
+    expect(seen).toHaveLength(3);
+    expect(outcome.shards).toHaveLength(3);
+    expect(new Set(outcome.shards.map(shard => shard.key)).size).toBe(3);
+    expect(outcome.shards.map(shard => shard.query)).toEqual([
+      'iphone',
+      'red magic 10 pro',
+      'nubia redmagic 10',
+    ]);
+  });
+
   it('collects nothing for a query with no results', async () => {
     const { probe } = stubProbe(() => 0);
     const outcome = await planShards(profile(), probe, limits());
@@ -124,11 +142,17 @@ describe('planShards', () => {
 
 describe('shardKey', () => {
   it('is stable and distinguishes every axis, so resume matches the right slice', () => {
-    expect(shardKey({ state: 'sp' })).toBe('sp|all||');
-    expect(shardKey({ state: 'sp', minPrice: 100, maxPrice: 200 })).toBe('sp|all|100|200');
-    expect(shardKey({ category: 'celulares' })).toBe('br|celulares||');
+    expect(shardKey({ state: 'sp' })).toBe('|sp|all||');
+    expect(shardKey({ state: 'sp', minPrice: 100, maxPrice: 200 })).toBe('|sp|all|100|200');
+    expect(shardKey({ category: 'celulares' })).toBe('|br|celulares||');
     expect(shardKey({ state: 'sp', minPrice: 100 })).not.toBe(
       shardKey({ state: 'sp', maxPrice: 100 })
+    );
+  });
+
+  it('separates two phrasings that cover the same ground', () => {
+    expect(shardKey({ query: 'redmagic 10 pro', state: 'rs' })).not.toBe(
+      shardKey({ query: 'red magic 10 pro', state: 'rs' })
     );
   });
 });

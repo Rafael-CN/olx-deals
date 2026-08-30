@@ -296,6 +296,9 @@ export const collect = async (
     }
 
     const slice: Shard = {
+      // Without this the slice falls back to the profile's primary query, which
+      // is how every extra phrasing was planned, paid for and never swept.
+      ...(shard.query ? { query: shard.query } : {}),
       ...(shard.state ? { state: shard.state } : {}),
       ...(shard.category ? { category: shard.category } : {}),
       ...(shard.min_price === null ? {} : { minPrice: shard.min_price }),

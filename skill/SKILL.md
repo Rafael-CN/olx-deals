@@ -72,11 +72,11 @@ Verifique uma vez por máquina:
 garimpo --help
 ```
 
-Se não existir, o repositório está em `~/Documents/Projetos/Claude/olx-mcp`
-(o diretório ainda tem o nome antigo; o pacote é `garimpo-olx`):
+Se não existir, o repositório está em `~/Documents/Projetos/Claude/garimpo-olx`
+:
 
 ```bash
-cd ~/Documents/Projetos/Claude/olx-mcp && npm install && npm run build && npm link
+cd ~/Documents/Projetos/Claude/garimpo-olx && npm install && npm run build && npm link
 ```
 
 Precisa de Node 22+ (usa `node:sqlite`) e Chromium do Playwright
@@ -175,9 +175,15 @@ run**, o banco deduplica por id, e a mediana é calculada sobre a união:
 garimpo hunt --query 'redmagic 10 pro'   --queries 'red magic 10 pro,nubia redmagic 10,redmagic 10' ...
 ```
 
-Custo real: as buscas se sobrepõem muito, então a união custa bem menos que a
-soma. No caso medido, 4 frasagens nacionais custaram 8 requisições e trouxeram
-191 anúncios.
+Custo real: **não presuma que sai barato.** A medição antiga — 4 frasagens
+nacionais por 8 requisições — foi feita quando cada frasagem era planejada,
+sondada e depois varrida sob a busca primária: as 8 requisições eram só as
+sondas, e uma frasagem só varria. Corrigido isso, N frasagens custam N
+varreduras, e a sobreposição entre elas só economiza na deduplicação por id,
+não na coleta.
+
+Então **rode `garimpo plan` antes** e mostre o número ao usuário. É o único
+custo que vale, e agora ele está certo.
 
 ### Passo 2b — demote, não rejeite
 

@@ -34,10 +34,22 @@ export interface PlanOutcome {
   readonly notes: string[];
 }
 
+/**
+ * A slice's identity, phrasing included.
+ *
+ * The query belongs in the key because a run may sweep several phrasings of the
+ * same product, and two of them cover the same state and price band. Leaving it
+ * out made those slices collide on storage: every phrasing was planned and
+ * probed, one row survived, and the sweep ran the primary query that many times.
+ */
 export const shardKey = (shard: Shard): string =>
-  [shard.state ?? 'br', shard.category ?? 'all', shard.minPrice ?? '', shard.maxPrice ?? ''].join(
-    '|'
-  );
+  [
+    shard.query ?? '',
+    shard.state ?? 'br',
+    shard.category ?? 'all',
+    shard.minPrice ?? '',
+    shard.maxPrice ?? '',
+  ].join('|');
 
 /**
  * Price rungs used to break up a slice that is too big to page through.

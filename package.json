@@ -1,6 +1,7 @@
 {
   "name": "garimpo-olx",
   "version": "1.0.11",
+  "private": true,
   "type": "module",
   "main": "dist/cli/index.js",
   "bin": {
@@ -44,20 +45,9 @@
     "brazil",
     "claude-skill"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "author": "Łukasz Margiela",
+  "author": "Rafael Nascimento",
   "license": "MIT",
-  "description": "CLI for bulk collection and triage of olx.com.br classified ads: adaptive sharding past the 5.000-result ceiling, configurable triage stages, and bargain detection against a product's own median price",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/l-margiela/olx-mcp.git"
-  },
-  "bugs": {
-    "url": "https://github.com/l-margiela/olx-mcp/issues"
-  },
-  "homepage": "https://github.com/l-margiela/olx-mcp#readme",
+  "description": "CLI de coleta em massa e triagem de anuncios da olx.com.br: fatiamento adaptativo alem do teto de 5.000 resultados, etapas de triagem configuraveis e caca a pechinchas contra a mediana do proprio produto",
   "dependencies": {
     "playwright": "^1.55.0",
     "zod": "^3.25.76"
