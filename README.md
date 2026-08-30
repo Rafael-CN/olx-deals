@@ -137,8 +137,15 @@ what the corrected sweep costs before any of it is spent.
 
 Collecting cards is 50 per request; reading an ad page is one each. `--sample N`
 caps how many candidates get read and `--sample-by` picks which: `match` (best
-answers), `price` (cheapest), `spread` (stratified across price bands, so a small
-sample still shows the market's shape) or `random`.
+answers), `price` (cheapest ads), `bands` (works up from the cheapest price band,
+best match within each), `spread` (stratified — the best ad from every band, then
+the second best from every band, so a small sample still shows the market's
+shape) or `random`.
+
+`spread` used to be `bands` wearing the other one's name: ordering rows by band
+and cutting with a LIMIT fills the quota from the bottom of the market and never
+reaches the top, which is the half a reference price most needs to see. Both
+policies are useful, so both exist, and each now does what it is called.
 
 ### Cloudflare is the real bottleneck, and a browser is the wrong client
 

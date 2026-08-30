@@ -436,11 +436,17 @@ export const ProfileSchema = z.object({
    *
    * A nationwide sweep can turn up thousands of plausible ads, and reading all of
    * them is hours. Sampling makes the trade explicit: 'match' reads the ads that
-   * best answer the query, 'price' the cheapest, 'spread' takes a stratified slice
-   * across price bands so the shape of the market is visible from a small sample,
-   * and 'random' is an unbiased look.
+   * best answer the query, 'price' the cheapest, 'bands' works up from the
+   * cheapest price band taking the best match in each, 'spread' takes a
+   * genuinely stratified slice — the best ad from every band, then the second
+   * best from every band — so the shape of the market is visible from a small
+   * sample, and 'random' is an unbiased look.
+   *
+   * 'bands' is what 'spread' used to do. It is a reasonable policy and it now
+   * has an honest name; what it is not is a stratified sample, because a LIMIT
+   * over band-ordered rows fills its quota from the bottom of the market.
    */
-  sampleBy: z.enum(['match', 'price', 'spread', 'random']).default('match'),
+  sampleBy: z.enum(['match', 'price', 'bands', 'spread', 'random']).default('match'),
   /**
    * Category slug paths, e.g. "celulares" or
    * "autos-e-pecas/carros-vans-e-utilitarios". Empty searches every category.

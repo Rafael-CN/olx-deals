@@ -61,7 +61,7 @@ Profile
   --demote 'capa,s23,air'   words that lower an ad's match score (never remove it)
   --min-match 25            only consider candidates scoring at least this
   --sample 250              how many candidates to actually read
-  --sample-by match|price|spread|random   which ones to pick
+  --sample-by match|price|bands|spread|random   which ones to pick
   --states sp,rj            UFs to sweep (default: all 27)
   --categories celulares    OLX category slug paths
   --min-price, --max-price

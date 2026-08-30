@@ -249,8 +249,8 @@ export const buildProfile = (values: CliValues): Profile => {
       : {};
 
   const sampleBy = values['sample-by'] ? String(values['sample-by']) : undefined;
-  if (sampleBy && !['match', 'price', 'spread', 'random'].includes(sampleBy)) {
-    throw new Error(`--sample-by must be match, price, spread or random, got "${sampleBy}"`);
+  if (sampleBy && !['match', 'price', 'bands', 'spread', 'random'].includes(sampleBy)) {
+    throw new Error(`--sample-by must be match, price, bands, spread or random, got "${sampleBy}"`);
   }
 
   return ProfileSchema.parse({

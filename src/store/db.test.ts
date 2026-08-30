@@ -175,6 +175,40 @@ describe('Store', () => {
     expect(store.adsAwaitingDetail('run-1', 10).map(ad => ad.id)).toEqual(['mid']);
   });
 
+  it('spreads a sample across the whole price range instead of filling from the bottom', () => {
+    // Twelve ads across four 250-real bands. A stratified sample of four must
+    // touch every band; ordering by band and cutting with LIMIT — which is what
+    // this used to do — returns four ads from the cheapest band and never sees
+    // the top of the market, which is the half a reference price most needs.
+    const prices = [100, 150, 200, 300, 350, 400, 600, 650, 700, 900, 950, 1000];
+    const ads = prices.map((price, index) => listing(`a${index}`, `R$ ${price}`));
+
+    store.saveCards(
+      'run-1',
+      's1',
+      ads,
+      'now',
+      new Map(ads.map((ad, index) => [ad.id, { score: 100 - index, detail: {} }]))
+    );
+    store.saveVerdicts(
+      'run-1',
+      'card',
+      ads.map(ad => ({ adId: ad.id, passed: true, stages: [{ id: 'for-sale', passed: true }] }))
+    );
+
+    const bandOf = (price: number) => Math.floor(price / 250);
+    const priced = (rows: Array<{ id: string }>) =>
+      rows.map(row => prices[Number(row.id.slice(1))] as number);
+
+    const spread = store.adsAwaitingDetail('run-1', 4, undefined, { sampleBy: 'spread' });
+    expect(priced(spread).map(bandOf).sort()).toEqual([0, 1, 2, 3]);
+
+    // Same budget, filled from the cheapest band outwards: it exhausts band 0
+    // before it reaches band 1, and never sees bands 2 and 3 at all.
+    const bands = store.adsAwaitingDetail('run-1', 4, undefined, { sampleBy: 'bands' });
+    expect(priced(bands).map(bandOf)).toEqual([0, 0, 0, 1]);
+  });
+
   it('reports where ads were lost, per stage', () => {
     store.saveCards('run-1', 's1', [listing('a', 'R$ 900'), listing('b', 'R$ 100')], 'now');
     store.saveVerdicts('run-1', 'card', [

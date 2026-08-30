@@ -158,6 +158,9 @@ export type ShardStatus = 'pending' | 'running' | 'done' | 'truncated' | 'error'
  * keyed globally so last week's sweep is this week's head start. Each entry is
  * applied only when the column is absent, so this runs on every open.
  */
+/** Width of a price band, in reais, for banded and stratified sampling. */
+const PRICE_BAND_WIDTH = 250;
+
 const ADDED_COLUMNS: ReadonlyArray<readonly [string, string, string]> = [
   ['shards', 'query', 'TEXT'],
   ['gems', 'cohort_level', 'TEXT'],
@@ -451,7 +454,10 @@ export class Store {
     runId: string,
     limit: number,
     refreshAfterDays?: number,
-    options: { minMatchScore?: number; sampleBy?: 'match' | 'price' | 'spread' | 'random' } = {}
+    options: {
+      minMatchScore?: number;
+      sampleBy?: 'match' | 'price' | 'bands' | 'spread' | 'random';
+    } = {}
   ): StoredAd[] {
     // Omitted means never re-read: the safe default, since re-reading is the
     // expensive mistake. A number re-reads anything older than that.
@@ -460,29 +466,51 @@ export class Store {
         ? ''
         : new Date(Date.now() - refreshAfterDays * 86_400_000).toISOString();
     // Sampling is how a sweep that found thousands of plausible ads finishes
-    // today. 'spread' walks price bands so a small sample still shows the shape of
-    // the market; the others are simply the best, the cheapest, or unbiased.
-    const order = {
-      match: 'r.match_score DESC, a.price ASC',
-      price: 'a.price ASC',
-      random: 'RANDOM()',
-      spread: 'CAST(a.price / 250 AS INTEGER), r.match_score DESC',
-    }[options.sampleBy ?? 'match'];
+    // today. Each policy answers a different question, and the names now say
+    // which: 'match' the best answers, 'price' the cheapest ads, 'bands' the
+    // cheapest bands with the best match inside each, 'spread' a genuinely
+    // stratified slice, 'random' an unbiased look.
+    const selection = `
+      SELECT a.id, a.url, a.title, a.price, a.location, a.image_url, a.published_at,
+             r.match_score AS match_score,
+             CAST(COALESCE(a.price, 0) / ${PRICE_BAND_WIDTH} AS INTEGER) AS price_band
+      FROM ads a
+      JOIN run_ads r ON r.ad_id = a.id
+      JOIN verdicts v ON v.ad_id = a.id AND v.run_id = r.run_id AND v.phase = 'card'
+      LEFT JOIN ad_details d ON d.ad_id = a.id
+      WHERE r.run_id = ? AND v.passed = 1
+        AND r.match_score >= ?
+        AND (d.ad_id IS NULL OR d.fetched_at < ?)`;
 
-    return this.db
-      .prepare(
-        `SELECT a.id, a.url, a.title, a.price, a.location, a.image_url, a.published_at
-         FROM ads a
-         JOIN run_ads r ON r.ad_id = a.id
-         JOIN verdicts v ON v.ad_id = a.id AND v.run_id = r.run_id AND v.phase = 'card'
-         LEFT JOIN ad_details d ON d.ad_id = a.id
-         WHERE r.run_id = ? AND v.passed = 1
-           AND r.match_score >= ?
-           AND (d.ad_id IS NULL OR d.fetched_at < ?)
-         ORDER BY ${order}
-         LIMIT ?`
-      )
-      .all(runId, options.minMatchScore ?? 0, cutoff, limit) as never;
+    const columns = 'id, url, title, price, location, image_url, published_at';
+
+    // 'spread' takes the best ad from every band, then the second best from
+    // every band, and so on. Ordering by band and cutting with LIMIT — which is
+    // what this did — is not a stratified sample at all: it fills the quota from
+    // the cheapest bands and never reaches the top of the market, which is
+    // exactly the half a reference price needs to see.
+    const sql =
+      options.sampleBy === 'spread'
+        ? `SELECT ${columns} FROM (
+             SELECT *, ROW_NUMBER() OVER (
+               PARTITION BY price_band ORDER BY match_score DESC, price ASC
+             ) AS depth
+             FROM (${selection})
+           )
+           ORDER BY depth ASC, price_band ASC
+           LIMIT ?`
+        : `SELECT ${columns} FROM (${selection})
+           ORDER BY ${
+             {
+               match: 'match_score DESC, price ASC',
+               price: 'price ASC',
+               random: 'RANDOM()',
+               bands: 'price_band ASC, match_score DESC',
+             }[options.sampleBy ?? 'match']
+           }
+           LIMIT ?`;
+
+    return this.db.prepare(sql).all(runId, options.minMatchScore ?? 0, cutoff, limit) as never;
   }
 
   /**
