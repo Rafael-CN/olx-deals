@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from './db.js';
 import { ProfileSchema } from '../config/profile.js';
+import { profileHash } from '../config/identity.js';
 import { Listing, ListingId } from '../core/types.js';
 
 const profile = ProfileSchema.parse({ name: 'test', query: 's22 ultra' });
@@ -24,7 +25,7 @@ describe('Store', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'garimpo-'));
     store = new Store(dir);
-    store.startRun('run-1', profile, '2026-08-26T00:00:00Z');
+    store.startRun('run-1', profile, '2026-08-26T00:00:00Z', profileHash(profile));
   });
 
   afterEach(() => {
@@ -228,6 +229,19 @@ describe('Store', () => {
     expect(store.runNotes('run-1')).toHaveLength(1);
   });
 
+  it('remembers the profile a run was started under, and only changes it on request', () => {
+    // startRun must not replace profile_json: it is the record of what the
+    // existing verdicts were produced under, and overwriting it rewrites that
+    // history to match whichever invocation happened to run last.
+    const amended = ProfileSchema.parse({ name: 'test', query: 's22 ultra', maxPrice: 3000 });
+
+    store.startRun('run-1', amended, 'later', profileHash(amended));
+    expect(store.getRun('run-1')?.profile_hash).toBe(profileHash(profile));
+
+    store.amendProfile('run-1', amended, profileHash(amended));
+    expect(store.getRun('run-1')?.profile_hash).toBe(profileHash(amended));
+  });
+
   it('reports where ads were lost, per stage', () => {
     store.saveCards('run-1', 's1', [listing('a', 'R$ 900'), listing('b', 'R$ 100')], 'now');
     store.saveVerdicts('run-1', 'card', [
@@ -267,7 +281,7 @@ describe('Store', () => {
   });
 
   it('keeps an ad across runs but scopes the sighting to each one', () => {
-    store.startRun('run-2', profile, '2026-08-27T00:00:00Z');
+    store.startRun('run-2', profile, '2026-08-27T00:00:00Z', profileHash(profile));
     store.saveCards('run-1', 's1', [listing('shared', 'R$ 900')], 'now');
     store.saveCards('run-2', 's1', [listing('shared', 'R$ 850')], 'later');
 

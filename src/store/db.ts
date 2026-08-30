@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS runs (
   name          TEXT NOT NULL,
   query         TEXT NOT NULL,
   profile_json  TEXT NOT NULL,
+  profile_hash  TEXT,
   started_at    TEXT NOT NULL,
   finished_at   TEXT,
   status        TEXT NOT NULL,
@@ -150,6 +151,18 @@ export interface StoredDetail {
 
 export type ShardStatus = 'pending' | 'running' | 'done' | 'truncated' | 'error';
 
+export interface StoredRun {
+  readonly id: string;
+  readonly profile_json: string;
+  /** Hash of the fields that decide what the run means; null on older rows. */
+  readonly profile_hash: string | null;
+  readonly status: string;
+  readonly notes_json: string | null;
+}
+
+/** Width of a price band, in reais, for banded and stratified sampling. */
+const PRICE_BAND_WIDTH = 250;
+
 /**
  * Columns added to a table after databases were already on disk.
  *
@@ -158,12 +171,10 @@ export type ShardStatus = 'pending' | 'running' | 'done' | 'truncated' | 'error'
  * keyed globally so last week's sweep is this week's head start. Each entry is
  * applied only when the column is absent, so this runs on every open.
  */
-/** Width of a price band, in reais, for banded and stratified sampling. */
-const PRICE_BAND_WIDTH = 250;
-
 const ADDED_COLUMNS: ReadonlyArray<readonly [string, string, string]> = [
   ['shards', 'query', 'TEXT'],
   ['gems', 'cohort_level', 'TEXT'],
+  ['runs', 'profile_hash', 'TEXT'],
 ];
 
 export class Store {
@@ -195,14 +206,29 @@ export class Store {
 
   // --- runs -----------------------------------------------------------------
 
-  startRun(id: string, profile: Profile, startedAt: string): void {
+  /**
+   * Opens or resumes a run.
+   *
+   * The stored profile is deliberately never replaced here: it is the record of
+   * what the run's existing verdicts were produced under, and overwriting it
+   * would rewrite that history to match whatever flags this invocation carried.
+   * Changing it is what amendProfile is for, and that is an explicit act.
+   */
+  startRun(id: string, profile: Profile, startedAt: string, profileHash: string): void {
     this.db
       .prepare(
-        `INSERT INTO runs (id, name, query, profile_json, started_at, status)
-         VALUES (?, ?, ?, ?, ?, 'running')
+        `INSERT INTO runs (id, name, query, profile_json, profile_hash, started_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'running')
          ON CONFLICT(id) DO UPDATE SET status = 'running'`
       )
-      .run(id, profile.name, profile.query, JSON.stringify(profile), startedAt);
+      .run(id, profile.name, profile.query, JSON.stringify(profile), profileHash, startedAt);
+  }
+
+  /** Deliberately re-points a run at a new profile, when the operator says so. */
+  amendProfile(id: string, profile: Profile, profileHash: string): void {
+    this.db
+      .prepare(`UPDATE runs SET profile_json = ?, profile_hash = ? WHERE id = ?`)
+      .run(JSON.stringify(profile), profileHash, id);
   }
 
   /**
@@ -222,14 +248,10 @@ export class Store {
       .run(status, finishedAt, JSON.stringify(merged), id);
   }
 
-  getRun(
-    id: string
-  ): { id: string; profile_json: string; status: string; notes_json: string | null } | undefined {
+  getRun(id: string): StoredRun | undefined {
     return this.db
-      .prepare(`SELECT id, profile_json, status, notes_json FROM runs WHERE id = ?`)
-      .get(id) as
-      | { id: string; profile_json: string; status: string; notes_json: string | null }
-      | undefined;
+      .prepare(`SELECT id, profile_json, profile_hash, status, notes_json FROM runs WHERE id = ?`)
+      .get(id) as StoredRun | undefined;
   }
 
   /** What the run could not reach, in the order it found out. */

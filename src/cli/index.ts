@@ -34,6 +34,7 @@ import { buildTaxonomy, TaxonomyFacts } from '../triage/taxonomy.js';
 import { clusterByPhoto, duplicateAdIds, relistCountFor } from '../triage/identity.js';
 import { SellerInfo } from '../core/types.js';
 import { CliValues, buildProfile, parseCommandLine, profileTemplate } from './options.js';
+import { profileDiff, profileHash } from '../config/identity.js';
 
 const HELP = `
 garimpo — bulk collection and triage of olx.com.br classified ads
@@ -93,6 +94,7 @@ Budget and pacing
   --window 02:00-07:00      only work during these hours (may wrap midnight)
   --refresh-after-days 7    re-read an ad page only if this stale
   --force                   start even though a previous run was blocked
+  --amend-profile           re-point an existing --run at the profile in hand
 
 Output
   --run <id>                act on a specific run (default: the latest)
@@ -591,11 +593,40 @@ What ${id} learned`);
 
     const now = new Date();
     const id = existing ?? runId(profile, now);
+    const hash = profileHash(profile);
+
+    // A run carries the profile its verdicts were produced under. Resuming it
+    // with different deciding flags used to sample under the new profile and
+    // judge under the old one, silently — so the phases disagreed about what the
+    // run was, and nothing in the output said which had won.
+    if (existing) {
+      const priorRun = store.getRun(existing);
+      if (priorRun && priorRun.profile_hash && priorRun.profile_hash !== hash) {
+        const stored = JSON.parse(priorRun.profile_json) as Profile;
+        const changes = profileDiff(stored, profile);
+        if (values['amend-profile'] === true) {
+          store.amendProfile(existing, profile, hash);
+          log(`amended run ${existing}: ${changes.map(change => change.field).join(', ')}`);
+        } else {
+          log(`run ${existing} was started under a different profile:`);
+          for (const change of changes) {
+            log(`  ${change.field}: ${change.from}  ->  ${change.to}`);
+          }
+          log('');
+          log('Sampling under one profile and judging under another is how a run comes to');
+          log('mean two things at once. Either resume it as it was, or say so explicitly:');
+          log(`  garimpo ${command} --run ${existing}                 (drop the changed flags)`);
+          log(`  garimpo ${command} --run ${existing} --amend-profile (re-point the run)`);
+          log(`  garimpo ${command} ...                               (start a fresh run)`);
+          return 4;
+        }
+      }
+    }
     const budget = newBudget(profile.limits);
     const context = await openContext(profile, values, store, budget);
 
     try {
-      store.startRun(id, profile, now.toISOString());
+      store.startRun(id, profile, now.toISOString(), hash);
       const notes: string[] = [];
 
       // One request, at the start, to read what the site asks of crawlers. A

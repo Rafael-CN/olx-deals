@@ -341,6 +341,15 @@ needs refreshing. Shards record how far they got, so a block on page 40 of 100
 resumes at 41. Re-running a command with `--run <id>` continues; it does not
 restart.
 
+A run also remembers the profile it was started under, and refuses to continue
+under a different one. The fields that count are the ones deciding which ads
+exist and which pass — query, phrasings, demotions, states, categories, price
+bounds, sort, stages, gem config. `--sample`, `--sample-by` and `--min-match` are
+deliberately excluded, because those are exactly what you turn between enrich
+passes and checking them would make ordinary iteration into an error. On a
+mismatch the run prints a field-level diff and stops, and `--amend-profile`
+re-points it deliberately.
+
 Two coverage limits are reported rather than hidden:
 
 - A slice OLX says holds more than 5.000 ads that could not be split further is

@@ -33,6 +33,7 @@ export const CLI_OPTIONS = {
   'min-match': { type: 'string' },
   sample: { type: 'string' },
   'sample-by': { type: 'string' },
+  'amend-profile': { type: 'boolean' },
   reject: { type: 'string', multiple: true },
   tolerate: { type: 'string' },
   'max-cards': { type: 'string' },
