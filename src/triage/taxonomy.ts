@@ -162,6 +162,9 @@ export interface CohortChoice {
  * steps outward, and reports which step it settled on, rather than either
  * inventing a median from four ads or giving up.
  */
+export const comparable = (facts: TaxonomyFacts): boolean =>
+  facts.price !== undefined && Number.isFinite(facts.price) && facts.price > 0;
+
 export const chooseCohort = (
   subject: TaxonomyFacts,
   corpus: readonly TaxonomyFacts[],
@@ -172,7 +175,11 @@ export const chooseCohort = (
     if (!key) continue;
 
     const members = corpus.filter(facts => cohortKey(facts, level) === key);
-    if (members.length >= minSize) return { level, key, members };
+    // Counted by priced members only. An ad OLX lists without a price sits in
+    // the cohort but contributes nothing to a median, so counting it here
+    // accepted a stratum at twelve that buildReference then rejected at nine —
+    // the selector approving a cohort the reference refused to judge.
+    if (members.filter(comparable).length >= minSize) return { level, key, members };
   }
 
   return { level: 'all', key: 'all', members: [...corpus] };

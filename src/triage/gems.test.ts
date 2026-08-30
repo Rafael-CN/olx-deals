@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assessGem, buildReference, rankGems } from './gems.js';
+import { assessGem, buildReference, rankGems, rankGemsByCohort } from './gems.js';
 import { GemConfigSchema } from '../config/profile.js';
 import { Candidate } from './stages.js';
 
@@ -177,5 +177,55 @@ describe('rankGems', () => {
 
     const { assessments } = rankGems(entries, config, now);
     expect(assessments[0]?.adId).toBe('bargain');
+  });
+});
+
+describe('rankGemsByCohort provenance', () => {
+  const facts = (id: string, price: number, model: string) => ({
+    adId: id,
+    matchScore: 100,
+    price,
+    attributes: { Marca: 'Samsung', Modelo: model },
+  });
+
+  const entry = (id: string, price: number, model: string) => ({
+    candidate: ad({ id, price }),
+    severity: 'none' as const,
+    clean: true,
+    facts: facts(id, price, model),
+  });
+
+  it('reports the median the verdict was computed against, not the corpus one', () => {
+    // Two models in one corpus, priced an order of magnitude apart. A corpus
+    // median describes neither, so storing it beside a cohort-relative discount
+    // put two references on the same row.
+    const cheap = [800, 850, 900, 950, 1000].map((price, index) =>
+      entry(`c${index}`, price, 'Galaxy A54')
+    );
+    const dear = [4000, 4200, 4400, 4600, 4800].map((price, index) =>
+      entry(`d${index}`, price, 'Galaxy S22 Ultra')
+    );
+
+    const { assessments, overall } = rankGemsByCohort([...cheap, ...dear], config);
+    const judged = assessments.find(assessment => assessment.adId === 'd0');
+
+    expect(judged?.cohortLevel).toBe('model');
+    expect(judged?.referenceMedian).toBe(4400);
+    expect(judged?.referenceMedian).not.toBe(overall.median);
+  });
+
+  it('counts only priced comparables, so the cohort size is what a median could use', () => {
+    const priced = [4000, 4200, 4400, 4600, 4800].map((price, index) =>
+      entry(`d${index}`, price, 'Galaxy S22 Ultra')
+    );
+    const unpriced = {
+      candidate: ad({ id: 'u1', price: 0 }),
+      severity: 'none' as const,
+      clean: true,
+      facts: { adId: 'u1', matchScore: 100, attributes: { Modelo: 'Galaxy S22 Ultra' } },
+    };
+
+    const { assessments } = rankGemsByCohort([...priced, unpriced], config);
+    expect(assessments.find(assessment => assessment.adId === 'd0')?.cohortSize).toBe(5);
   });
 });

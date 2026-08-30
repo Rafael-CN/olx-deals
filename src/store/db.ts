@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS gems (
   robust_z        REAL NOT NULL,
   median          REAL NOT NULL,
   reference_size  INTEGER NOT NULL,
+  cohort_level    TEXT,
   verdict         TEXT NOT NULL,
   reasons_json    TEXT NOT NULL,
   PRIMARY KEY (run_id, ad_id)
@@ -159,6 +160,7 @@ export type ShardStatus = 'pending' | 'running' | 'done' | 'truncated' | 'error'
  */
 const ADDED_COLUMNS: ReadonlyArray<readonly [string, string, string]> = [
   ['shards', 'query', 'TEXT'],
+  ['gems', 'cohort_level', 'TEXT'],
 ];
 
 export class Store {
@@ -697,16 +699,18 @@ export class Store {
       robustZ: number;
       median: number;
       referenceSize: number;
+      cohortLevel?: string | undefined;
       verdict: string;
       reasons: string[];
     }>
   ): void {
     const insert = this.db.prepare(
-      `INSERT INTO gems (run_id, ad_id, score, discount_pct, robust_z, median, reference_size, verdict, reasons_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO gems (run_id, ad_id, score, discount_pct, robust_z, median, reference_size, cohort_level, verdict, reasons_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id, ad_id) DO UPDATE SET
          score = excluded.score, discount_pct = excluded.discount_pct, robust_z = excluded.robust_z,
          median = excluded.median, reference_size = excluded.reference_size,
+         cohort_level = excluded.cohort_level,
          verdict = excluded.verdict, reasons_json = excluded.reasons_json`
     );
     this.db.exec('BEGIN');
@@ -720,6 +724,7 @@ export class Store {
           row.robustZ,
           row.median,
           row.referenceSize,
+          row.cohortLevel ?? null,
           row.verdict,
           JSON.stringify(row.reasons)
         );

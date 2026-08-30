@@ -194,3 +194,37 @@ describe('describeCohort', () => {
     );
   });
 });
+
+describe('chooseCohort and unpriced members', () => {
+  const facts = (id: string, model: string, price?: number) => ({
+    adId: id,
+    matchScore: 100,
+    ...(price === undefined ? {} : { price }),
+    attributes: { Modelo: model },
+  });
+
+  it('does not accept a stratum the reference would then refuse to judge', () => {
+    // Ten ads share the model but only four carry a price. Counting members
+    // rather than comparables approved this stratum at ten, and buildReference
+    // then rejected it at four — the selector and the reference disagreeing
+    // about the same cohort.
+    const corpus = [
+      ...[1000, 1100, 1200, 1300].map((price, index) =>
+        facts(`p${index}`, 'Redmagic 10 Pro', price)
+      ),
+      ...Array.from({ length: 6 }, (_, index) => facts(`u${index}`, 'Redmagic 10 Pro')),
+    ];
+
+    const choice = chooseCohort(facts('subject', 'Redmagic 10 Pro', 1150), corpus, 6);
+    expect(choice.level).toBe('all');
+  });
+
+  it('accepts a stratum once enough of it is priced', () => {
+    const corpus = [1000, 1100, 1200, 1300, 1400, 1500].map((price, index) =>
+      facts(`p${index}`, 'Redmagic 10 Pro', price)
+    );
+
+    const choice = chooseCohort(facts('subject', 'Redmagic 10 Pro', 1150), corpus, 6);
+    expect(choice.level).toBe('model');
+  });
+});

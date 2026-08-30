@@ -28,7 +28,10 @@ export interface GemAssessment {
   /** Which stratum the price was judged against, when cohorts were used. */
   readonly cohortLevel?: CohortLevel | undefined;
   readonly cohortLabel?: string | undefined;
+  /** Priced comparables in that stratum — the ones a median could use. */
   readonly cohortSize?: number | undefined;
+  /** The median discountPct and robustZ were computed against. */
+  readonly referenceMedian?: number | undefined;
 }
 
 export const percentile = (sorted: readonly number[], fraction: number): number => {
@@ -273,8 +276,12 @@ export const rankGemsByCohort = (
       ...assessment,
       cohortLevel: cohort.level,
       cohortLabel: label,
-      cohortSize: cohort.members.length,
-      reasons: [`compared against ${label} (${cohort.members.length} ads)`, ...assessment.reasons],
+      // The reference this ad was judged against, carried out so the store
+      // records the number the verdict was computed from rather than a
+      // corpus-wide median that no discount here refers to.
+      referenceMedian: reference.median,
+      cohortSize: reference.size,
+      reasons: [`compared against ${label} (${reference.size} priced ads)`, ...assessment.reasons],
     };
   });
 

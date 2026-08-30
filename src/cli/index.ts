@@ -236,8 +236,12 @@ const runGems = (store: Store, id: string, profile: Profile) => {
       score: assessment.score,
       discountPct: assessment.discountPct,
       robustZ: assessment.robustZ,
-      median: overall.median,
+      // The median this ad's discount and robustZ were actually computed
+      // against. Storing the corpus-wide one here put two different references
+      // on the same row, so any SQL over the table mixed them silently.
+      median: assessment.referenceMedian ?? overall.median,
       referenceSize: assessment.cohortSize ?? overall.size,
+      ...(assessment.cohortLevel === undefined ? {} : { cohortLevel: assessment.cohortLevel }),
       verdict: assessment.verdict,
       reasons: [
         ...assessment.reasons,
