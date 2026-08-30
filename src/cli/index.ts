@@ -313,6 +313,10 @@ const report = (store: Store, id: string, top: number, asJson: boolean): void =>
   const cardRejects = store.rejectionReasons(id, 'card', 8);
   const detailRejects = store.rejectionReasons(id, 'detail', 8);
   const totalAds = store.countRunAds(id);
+  // What the run could not reach. Written by plan and by every phase that hits
+  // a wall, and until now readable by nothing: report is the one command the
+  // skill tells the agent to read, and it could not see the caveats at all.
+  const coverage = store.runNotes(id);
 
   if (asJson) {
     process.stdout.write(
@@ -320,6 +324,7 @@ const report = (store: Store, id: string, top: number, asJson: boolean): void =>
         {
           run: id,
           totalAds,
+          coverage,
           shards,
           prices,
           funnel,
@@ -337,6 +342,12 @@ const report = (store: Store, id: string, top: number, asJson: boolean): void =>
   const out = (line: string) => process.stdout.write(`${line}\n`);
   out(`\nRun ${id}`);
   out(`  ads collected: ${totalAds}`);
+  if (coverage.length > 0) {
+    out(`  coverage: partial — ${coverage.length} caveat(s)`);
+    for (const note of coverage) out(`    - ${note}`);
+  } else {
+    out('  coverage: no caveats recorded');
+  }
   out(
     `  price range: ${money(prices['min'] as number)} – ${money(prices['max'] as number)} ` +
       `(${prices['n']} priced)`

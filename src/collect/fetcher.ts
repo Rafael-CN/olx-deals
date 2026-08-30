@@ -6,8 +6,6 @@ export interface FetchOutcome {
   readonly url: string;
   /** Seconds the server asked us to wait, when it said so. */
   readonly retryAfterSeconds?: number | undefined;
-  /** True when the bytes came from the browser's own HTTP cache. */
-  readonly fromCache?: boolean | undefined;
 }
 
 /**
@@ -36,7 +34,6 @@ export interface FetchOutcome {
 export class HtmlFetcher {
   private readonly anchors = new Map<string, Page>();
   private requests = 0;
-  private cached = 0;
   private bytes = 0;
   private anchorLoads = 0;
 
@@ -72,9 +69,16 @@ export class HtmlFetcher {
   /**
    * One request for the document, issued by Chrome from the target origin.
    *
-   * `fetch` participates in the browser's HTTP cache, so a page that has not
-   * changed since a previous run can come back as a 304 or not leave the machine
-   * at all — which is the cheapest possible request for both sides.
+   * It participates in the browser's HTTP cache, but that cache lives in a
+   * context created fresh on every invocation (BrowserSession.open), so nothing
+   * survives between runs: the claim that used to sit here, that an unchanged
+   * page could come back as a 304 from a previous run, was impossible by
+   * construction. Within a single run a repeat of the same URL can still be
+   * served from memory.
+   *
+   * Whether olx.com.br even sends validators — ETag, Last-Modified,
+   * Cache-Control — is unmeasured. It is four requests to find out, and it is on
+   * the measurement backlog in docs/STUDY-future.md rather than assumed here.
    */
   async get(url: string): Promise<FetchOutcome> {
     // Anchoring may hit the site itself, so it gates inside anchorFor; this gate
@@ -91,8 +95,6 @@ export class HtmlFetcher {
           html: await response.text(),
           url: response.url,
           retryAfter: response.headers.get('retry-after'),
-          // Chrome reports a cache hit as a zero-length transfer on the entry.
-          fromCache: false,
         };
       } catch (error) {
         return {
@@ -100,7 +102,6 @@ export class HtmlFetcher {
           html: '',
           url: target,
           retryAfter: null,
-          fromCache: false,
           error: error instanceof Error ? error.message : String(error),
         };
       }
@@ -111,7 +112,6 @@ export class HtmlFetcher {
     }
 
     this.bytes += outcome.html.length;
-    if (outcome.fromCache) this.cached += 1;
 
     const parsed = outcome.retryAfter ? Number(outcome.retryAfter) : Number.NaN;
     return {
@@ -119,7 +119,6 @@ export class HtmlFetcher {
       html: outcome.html,
       url: outcome.url,
       ...(Number.isFinite(parsed) ? { retryAfterSeconds: parsed } : {}),
-      ...(outcome.fromCache ? { fromCache: true } : {}),
     };
   }
 
@@ -170,14 +169,12 @@ export class HtmlFetcher {
   get stats(): {
     requests: number;
     kilobytes: number;
-    cached: number;
     anchorLoads: number;
     origins: number;
   } {
     return {
       requests: this.requests,
       kilobytes: Math.round(this.bytes / 1024),
-      cached: this.cached,
       anchorLoads: this.anchorLoads,
       origins: this.anchors.size,
     };

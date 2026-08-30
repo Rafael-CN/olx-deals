@@ -205,16 +205,45 @@ export class Store {
       .run(id, profile.name, profile.query, JSON.stringify(profile), startedAt);
   }
 
+  /**
+   * Closes a phase, keeping every coverage caveat the run has accumulated.
+   *
+   * This used to overwrite notes_json, and each invocation builds its own notes
+   * array — so `collect --run <id>` destroyed the truncation and unreachable-
+   * unpriced-ads warnings that `plan --run <id>` had written minutes earlier.
+   * The caveats a run most needs to carry are written by the phase least likely
+   * to be the last one.
+   */
   finishRun(id: string, status: string, finishedAt: string, notes: string[]): void {
+    const merged = [...this.runNotes(id)];
+    for (const note of notes) if (!merged.includes(note)) merged.push(note);
     this.db
       .prepare(`UPDATE runs SET status = ?, finished_at = ?, notes_json = ? WHERE id = ?`)
-      .run(status, finishedAt, JSON.stringify(notes), id);
+      .run(status, finishedAt, JSON.stringify(merged), id);
   }
 
-  getRun(id: string): { id: string; profile_json: string; status: string } | undefined {
-    return this.db.prepare(`SELECT id, profile_json, status FROM runs WHERE id = ?`).get(id) as
-      | { id: string; profile_json: string; status: string }
+  getRun(
+    id: string
+  ): { id: string; profile_json: string; status: string; notes_json: string | null } | undefined {
+    return this.db
+      .prepare(`SELECT id, profile_json, status, notes_json FROM runs WHERE id = ?`)
+      .get(id) as
+      | { id: string; profile_json: string; status: string; notes_json: string | null }
       | undefined;
+  }
+
+  /** What the run could not reach, in the order it found out. */
+  runNotes(id: string): string[] {
+    const row = this.db.prepare(`SELECT notes_json FROM runs WHERE id = ?`).get(id) as
+      | { notes_json: string | null }
+      | undefined;
+    if (!row?.notes_json) return [];
+    try {
+      const parsed: unknown = JSON.parse(row.notes_json);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
   }
 
   latestRunId(): string | undefined {

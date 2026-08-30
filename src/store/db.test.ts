@@ -209,6 +209,25 @@ describe('Store', () => {
     expect(priced(bands).map(bandOf)).toEqual([0, 0, 0, 1]);
   });
 
+  it('keeps the coverage caveats an earlier phase wrote', () => {
+    // plan writes what it could not reach, then collect finishes the same run
+    // with its own notes array. Overwriting here destroyed the truncation and
+    // unpriced-ads warnings minutes after they were recorded.
+    store.finishRun('run-1', 'planned', 'now', ['3 slices truncated at the 5.000 ceiling']);
+    store.finishRun('run-1', 'done', 'later', ['collection stopped: request budget exhausted']);
+
+    expect(store.runNotes('run-1')).toEqual([
+      '3 slices truncated at the 5.000 ceiling',
+      'collection stopped: request budget exhausted',
+    ]);
+  });
+
+  it('does not repeat a caveat a rerun writes again', () => {
+    store.finishRun('run-1', 'planned', 'now', ['3 slices truncated at the 5.000 ceiling']);
+    store.finishRun('run-1', 'planned', 'again', ['3 slices truncated at the 5.000 ceiling']);
+    expect(store.runNotes('run-1')).toHaveLength(1);
+  });
+
   it('reports where ads were lost, per stage', () => {
     store.saveCards('run-1', 's1', [listing('a', 'R$ 900'), listing('b', 'R$ 100')], 'now');
     store.saveVerdicts('run-1', 'card', [
