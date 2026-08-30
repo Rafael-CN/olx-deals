@@ -164,6 +164,29 @@ fewer requests, each less coherent. Each origin is anchored on its own
 `/robots.txt`, which is a few hundred bytes and a document a crawler should be
 reading first anyway.
 
+**And robots.txt is now actually read.** The first version of this checker could
+not express the rules it was fetching: it stripped trailing asterisks and did a
+prefix comparison, so a rule written as `/*?*q=*` became the prefix `/*?*q=` and
+matched nothing. `Allow` was never parsed. And the caller compared a pathname
+with the query string discarded — which matters enormously, because a site whose
+rules are written against query parameters can only ever answer "allowed" to a
+question asked about the path alone.
+
+The result was the worst possible failure for a tool that sells honesty: it
+checked, found nothing, said nothing, and left the operator to conclude the
+search was welcome. The matcher now implements RFC 9309 — groups keyed by
+user-agent, `*` and `$` wildcards, longest match wins, allow breaks a tie — and
+compares the path together with its query string. An unreachable robots.txt is
+read as a full disallow, per §2.3.1.4.
+
+What the file says is now reported at run time rather than asserted here, and
+when a rule matches, the run prints the rule and the target it matched, then
+continues and records the fact in the run's coverage notes. Continuing is a
+deliberate choice for a personal, non-commercial tool, and the point of printing
+it is that the choice is made knowingly rather than by a checker that could not
+see. Note also that OLX publishes an API for *posting* classified ads, not for
+reading them, so there is no sanctioned read path to prefer over this one.
+
 **Which gates you choose decides what the sweep costs.** The ad's HTML carries the
 sales record and the verification badges, but not the seller's name, join date or
 rating — those appear only once the card hydrates. Measured, not assumed:

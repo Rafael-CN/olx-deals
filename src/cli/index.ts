@@ -7,7 +7,13 @@ import { BrowserSession } from '../collect/session.js';
 import { RateGovernor, CollectionHalted } from '../collect/governor.js';
 import { HtmlFetcher, RequestMeter } from '../collect/fetcher.js';
 import { BlockMemory, describeWait } from '../collect/cooldown.js';
-import { isDisallowed, parseRobots, rpmCeilingFor } from '../collect/robots.js';
+import {
+  checkPath,
+  parseRobots,
+  rpmCeilingFor,
+  RobotsRules,
+  UNREACHABLE_ROBOTS,
+} from '../collect/robots.js';
 import { planShards } from '../collect/shard.js';
 import { describeEstimate, estimateCost } from '../collect/estimate.js';
 import {
@@ -584,27 +590,49 @@ What ${id} learned`);
       try {
         // Free: the fetcher anchors each origin on its robots.txt anyway, so this
         // reads a document already fetched rather than asking for another.
-        const rules = parseRobots(await context.fetcher.robotsFor('https://www.olx.com.br'));
-        if (rules.available) {
-          const ceiling = rpmCeilingFor(rules);
-          if (ceiling !== undefined) {
-            context.governor.imposeCeiling(ceiling);
-            context.log(
-              `robots.txt asks for ${rules.crawlDelay}s between requests — capping at ${ceiling.toFixed(1)} rpm`
-            );
-            notes.push(`robots.txt Crawl-delay ${rules.crawlDelay}s honoured`);
+        let rules: RobotsRules;
+        try {
+          rules = parseRobots(await context.fetcher.robotsFor('https://www.olx.com.br'));
+        } catch (error) {
+          // RFC 9309 reads an unreachable robots.txt as a full disallow: a
+          // crawler that could not hear the answer should not assume it was yes.
+          rules = UNREACHABLE_ROBOTS;
+          context.log(`could not read robots.txt (${(error as Error).message})`);
+        }
+
+        const ceiling = rpmCeilingFor(rules);
+        if (ceiling !== undefined) {
+          context.governor.imposeCeiling(ceiling);
+          context.log(
+            `robots.txt asks for ${rules.crawlDelay}s between requests — capping at ${ceiling.toFixed(1)} rpm`
+          );
+          notes.push(`robots.txt Crawl-delay ${rules.crawlDelay}s honoured`);
+        }
+
+        // Path *and* query: olx.com.br writes its rules entirely against query
+        // parameters, so comparing the pathname alone can only say "allowed".
+        const searchUrl = new URL(
+          context.scraper.searchUrlFor({ domain: 'olx.com.br', query: profile.query })
+        );
+        const target = `${searchUrl.pathname}${searchUrl.search}`;
+        const verdict = checkPath(rules, target);
+        if (!verdict.allowed) {
+          const rule = verdict.rule ?? 'Disallow: /';
+          const source = rules.available ? 'robots.txt' : 'an unreadable robots.txt';
+          for (const line of [
+            '',
+            `  ${source} asks generic crawlers to stay out of this search.`,
+            `    rule:   ${rule}`,
+            `    target: ${target}`,
+            '  Continuing, because this run was started knowing that.',
+            '',
+          ]) {
+            context.log(line);
           }
-          const searchPath = new URL(
-            context.scraper.searchUrlFor({ domain: 'olx.com.br', query: profile.query })
-          ).pathname;
-          if (isDisallowed(rules, searchPath)) {
-            const warning = `robots.txt disallows ${searchPath} for generic crawlers.`;
-            context.log(warning);
-            notes.push(warning);
-          }
+          notes.push(`robots.txt asked us not to read ${target} (${rule}); swept anyway.`);
         }
       } catch (error) {
-        context.log(`could not read robots.txt: ${(error as Error).message}`);
+        context.log(`could not check robots.txt: ${(error as Error).message}`);
       }
 
       if (command === 'plan' || command === 'hunt') {
