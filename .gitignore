@@ -89,8 +89,8 @@ CLAUDE.md
 **/CLAUDE.md
 
 # Collected corpora and cached browser state
-.garimpo/
-.garimpo-*/
+.olx-deals/
+.olx-deals-*/
 *.db
 *.db-wal
 *.db-shm

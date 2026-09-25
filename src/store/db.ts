@@ -182,7 +182,7 @@ export class Store {
 
   constructor(dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
-    this.db = new DatabaseSync(join(dataDir, 'garimpo.db'));
+    this.db = new DatabaseSync(join(dataDir, 'olx-deals.db'));
     // WAL keeps a long write-heavy sweep from locking out concurrent readers.
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA synchronous = NORMAL');

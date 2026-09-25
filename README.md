@@ -1,4 +1,4 @@
-# garimpo-olx
+# olx-deals
 
 Bulk collection and triage of [olx.com.br](https://www.olx.com.br) classified ads.
 
@@ -32,7 +32,7 @@ so a missing shell is not a hard failure. `--channel chrome` forces a choice.
 ## Use
 
 ```bash
-garimpo hunt --query "galaxy s22 ultra" --states rs \
+olx-deals hunt --query "galaxy s22 ultra" --states rs \
   --require 's\s*22,ultra' --reject 'capa,capinha,carregador,s21,s23,plus' \
   --min-price 800 --max-price 4000 --tolerate minor --gems --top 10
 ```
@@ -41,22 +41,22 @@ Better, for anything you might run twice — a profile is a record, shell histor
 not:
 
 ```bash
-garimpo template > perfil.json   # a full, editable profile including the defect lexicon
-garimpo hunt --profile perfil.json
+olx-deals template > perfil.json   # a full, editable profile including the defect lexicon
+olx-deals hunt --profile perfil.json
 ```
 
 For a large sweep, run the phases separately so collection is not held hostage to
 the slowest part:
 
 ```bash
-garimpo plan    --profile perfil.json          # how the search will be sliced
-garimpo collect --profile perfil.json --run <id>
-garimpo enrich  --profile perfil.json --run <id> --max-details 100
-garimpo gems    --run <id>
-garimpo report  --run <id> --top 20
+olx-deals plan    --profile perfil.json          # how the search will be sliced
+olx-deals collect --profile perfil.json --run <id>
+olx-deals enrich  --profile perfil.json --run <id> --max-details 100
+olx-deals gems    --run <id>
+olx-deals report  --run <id> --top 20
 ```
 
-`garimpo --help` lists every flag.
+`olx-deals --help` lists every flag.
 
 ## What OLX actually does, and why the design looks like this
 
@@ -129,11 +129,11 @@ which is exactly why it can sit below the going rate. In the same run, the cheap
 ad scoring 90+ was R$ 3.000, while a listing titled just "Celular Redmagic" scored
 70 at R$ 2.700. A hard filter deletes that ad; a score ranks it and lets you look.
 
-`garimpo candidates` browses the ranked base, and the threshold moves afterwards
+`olx-deals candidates` browses the ranked base, and the threshold moves afterwards
 without spending a request:
 
 ```bash
-garimpo candidates --run <id> --min-match 70 --max-price 3000 --top 20
+olx-deals candidates --run <id> --min-match 70 --max-price 3000 --top 20
 ```
 
 ### One query is what a person would type; a hunt runs several
@@ -246,7 +246,7 @@ nor stable.
 For when finishing today matters less than never being blocked:
 
 ```bash
-garimpo hunt --profile perfil.json --gentle
+olx-deals hunt --profile perfil.json --gentle
 ```
 
 Roughly 2 rpm, one page at a time, a five-minute sit-down every 60 requests, ten
@@ -254,7 +254,7 @@ minutes of silence at the first refusal. A statewide sweep takes hours. That is 
 trade.
 
 `--window 02:00-07:00` confines a run to chosen hours (it may wrap midnight): a
-site under load polices traffic harder than a quiet one. And `garimpo plan` prints
+site under load polices traffic harder than a quiet one. And `olx-deals plan` prints
 what the sweep will cost in requests and minutes before any of it is spent, so a
 nationwide run can be turned down before it starts rather than abandoned an hour
 in.
@@ -306,7 +306,7 @@ never mention condition at all. Every hit is checked for a negator in the words
 before it, bounded by the clause — so a "sem carregador" cannot cancel a cracked
 screen mentioned in the previous sentence.
 
-The lexicon is data (`garimpo template` prints it) because it is the part most
+The lexicon is data (`olx-deals template` prints it) because it is the part most
 worth tuning: "linha verde" decides a phone screen and means nothing on a bicycle.
 
 ## Gem hunting
@@ -335,7 +335,7 @@ Verdicts: `gem`, `watch`, `suspect`, `rejected`.
 
 ## Runs are resumable, and say what they missed
 
-Everything lands in SQLite under `--data-dir` (default `.garimpo`). Ads are keyed
+Everything lands in SQLite under `--data-dir` (default `.olx-deals`). Ads are keyed
 globally, so a product swept last week is already known this week and only its price
 needs refreshing. Shards record how far they got, so a block on page 40 of 100
 resumes at 41. Re-running a command with `--run <id>` continues; it does not

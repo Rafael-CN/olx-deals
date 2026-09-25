@@ -1,9 +1,9 @@
 ---
-name: garimpo-olx
-description: Coleta em massa e triagem de anúncios da OLX Brasil (olx.com.br) via CLI `garimpo`, incluindo caça a "jóias" — o mesmo produto muito abaixo do preço mediano dele na própria OLX, sem defeito e de vendedor confiável. Acione quando o pedido envolver procurar, comparar, monitorar ou garimpar anúncios na OLX brasileira; varrer um produto por estado ou por todo o Brasil; achar o mais barato, uma pechincha, uma "jóia" ou um preço fora da curva; filtrar anúncios por defeito, condição, fotos, recência ou qualidade do vendedor; ou coletar centenas/milhares de anúncios para triagem. Triggers "OLX", "olx.com.br", "anúncio", "garimpo", "garimpar", "pechincha", "jóia", "achar barato", "quanto custa usado". NÃO use para outros marketplaces (Mercado Livre, Enjoei, Facebook Marketplace) nem para as OLX europeias.
+name: olx-deals
+description: Coleta em massa e triagem de anúncios da OLX Brasil (olx.com.br) via CLI `olx-deals`, incluindo caça a "jóias" — o mesmo produto muito abaixo do preço mediano dele na própria OLX, sem defeito e de vendedor confiável. Acione quando o pedido envolver procurar, comparar, monitorar ou garimpar anúncios na OLX brasileira; varrer um produto por estado ou por todo o Brasil; achar o mais barato, uma pechincha, uma "jóia" ou um preço fora da curva; filtrar anúncios por defeito, condição, fotos, recência ou qualidade do vendedor; ou coletar centenas/milhares de anúncios para triagem. Triggers "OLX", "olx.com.br", "anúncio", "garimpo", "garimpar", "pechincha", "jóia", "achar barato", "quanto custa usado". NÃO use para outros marketplaces (Mercado Livre, Enjoei, Facebook Marketplace) nem para as OLX europeias.
 ---
 
-# Garimpo OLX
+# OLX Deals
 
 CLI de coleta e triagem em massa da olx.com.br. Um comando varre o país, filtra
 por etapas configuráveis e ranqueia achados contra o preço mediano do próprio
@@ -31,7 +31,7 @@ Foram todos medidos contra o site, não deduzidos.
    - **Uma "requisição" não é uma requisição.** Abrir uma página da OLX no
      browser dispara o documento, os chunks do Next, analytics, slots de anúncio
      e as chamadas de API da própria página — dezenas de hits, muitos para
-     olx.com.br. Por isso o `garimpo` **não abre página**: busca só o documento
+     olx.com.br. Por isso o `olx-deals` **não abre página**: busca só o documento
      (1 requisição) e renderiza num DOM com JS desligado e rotas abortadas.
    - **E busca com o próprio Chrome.** O fetch acontece *dentro* de uma página já
      parada na origem alvo, via `fetch()` do navegador — TLS do Chrome, headers do
@@ -69,14 +69,14 @@ Foram todos medidos contra o site, não deduzidos.
 Verifique uma vez por máquina:
 
 ```bash
-garimpo --help
+olx-deals --help
 ```
 
-Se não existir, o repositório está em `~/Documents/Projetos/Claude/garimpo-olx`
+Se não existir, o repositório está em `~/Documents/Projetos/Claude/olx-deals`
 :
 
 ```bash
-cd ~/Documents/Projetos/Claude/garimpo-olx && npm install && npm run build && npm link
+cd ~/Documents/Projetos/Claude/olx-deals && npm install && npm run build && npm link
 ```
 
 Precisa de Node 22+ (usa `node:sqlite`) e Chromium do Playwright
@@ -143,7 +143,7 @@ quantos dos candidatos você quer que eu leia a página?**
     mercado com pouca leitura.
   - `random` — olhada sem viés.
 
-Diga o número de requisições estimado antes de confirmar. `garimpo plan` calcula.
+Diga o número de requisições estimado antes de confirmar. `olx-deals plan` calcula.
 
 **Rodada 4 — só no modo jóia**
 
@@ -172,7 +172,7 @@ run**, o banco deduplica por id, e a mediana é calculada sobre a união:
 - erro de digitação comum, quando plausível: `redmagic 10 pró`
 
 ```bash
-garimpo hunt --query 'redmagic 10 pro'   --queries 'red magic 10 pro,nubia redmagic 10,redmagic 10' ...
+olx-deals hunt --query 'redmagic 10 pro'   --queries 'red magic 10 pro,nubia redmagic 10,redmagic 10' ...
 ```
 
 Custo real: **não presuma que sai barato.** A medição antiga — 4 frasagens
@@ -182,7 +182,7 @@ sondas, e uma frasagem só varria. Corrigido isso, N frasagens custam N
 varreduras, e a sobreposição entre elas só economiza na deduplicação por id,
 não na coleta.
 
-Então **rode `garimpo plan` antes** e mostre o número ao usuário. É o único
+Então **rode `olx-deals plan` antes** e mostre o número ao usuário. É o único
 custo que vale, e agora ele está certo.
 
 ### Passo 2b — demote, não rejeite
@@ -214,12 +214,12 @@ Confirme a lista com o usuário. Um `--reject` largo demais some com anúncio bo
 ### Passo 3 — profile em arquivo, não em flags
 
 Escreva um JSON e passe com `--profile`. Uma varredura que vale rodar vale
-guardar, e histórico de shell não é registro de nada. `garimpo template` imprime
+guardar, e histórico de shell não é registro de nada. `olx-deals template` imprime
 um profile completo e comentável para partir dele — inclui o léxico de defeitos
 inteiro, que é a parte que mais vale ajustar por produto.
 
 ```bash
-garimpo template > /tmp/perfil.json
+olx-deals template > /tmp/perfil.json
 ```
 
 ### Passo 4 — rode
@@ -227,17 +227,17 @@ garimpo template > /tmp/perfil.json
 Um passo só (planeja, coleta, tria, lê detalhes, re-tria, ranqueia):
 
 ```bash
-garimpo hunt --profile /tmp/perfil.json --top 10
+olx-deals hunt --profile /tmp/perfil.json --top 10
 ```
 
 Em fases, que é o certo para coleta grande — colete tudo primeiro, leia detalhes
 depois, em invocações separadas:
 
 ```bash
-garimpo plan    --profile /tmp/perfil.json
-garimpo collect --profile /tmp/perfil.json --run <id>
-garimpo enrich  --profile /tmp/perfil.json --run <id> --max-details 100
-garimpo gems    --run <id>
+olx-deals plan    --profile /tmp/perfil.json
+olx-deals collect --profile /tmp/perfil.json --run <id>
+olx-deals enrich  --profile /tmp/perfil.json --run <id> --max-details 100
+olx-deals gems    --run <id>
 ```
 
 Comece com `plan`: ele diz quantas fatias e quantos anúncios estão alcançáveis
@@ -250,8 +250,8 @@ Depois de coletar, **antes de ler página de anúncio**, veja a paisagem. Custa
 zero requisições:
 
 ```bash
-garimpo candidates --run <id> --min-match 70 --top 20
-garimpo candidates --run <id> --min-match 50 --max-price 3000 --top 20
+olx-deals candidates --run <id> --min-match 70 --top 20
+olx-deals candidates --run <id> --min-match 50 --max-price 3000 --top 20
 ```
 
 Sai ordenado por score de match, com preço e local, mais o histograma de bandas.
@@ -269,7 +269,7 @@ Use isso para:
 ### Passo 4c — depois de enriquecer, pergunte o que o acervo ensinou
 
 ```bash
-garimpo insights --run <id>
+olx-deals insights --run <id>
 ```
 
 Zero requisições. Devolve duas coisas que a ferramenta aprendeu sozinha:
@@ -293,14 +293,14 @@ conversa — é por isso que existe CLI e banco em disco em vez de tool call. Le
 sempre agregado:
 
 ```bash
-garimpo report --run <id> --top 15         # funil, preços, melhores achados
-garimpo report --run <id> --json --top 20  # o mesmo, estruturado
+olx-deals report --run <id> --top 15         # funil, preços, melhores achados
+olx-deals report --run <id> --json --top 20  # o mesmo, estruturado
 ```
 
 O `report` já traz o que interessa: quantos anúncios caíram em cada etapa, por
 quê (agrupado), a faixa de preço e os melhores achados com o motivo de cada um.
 Se precisar de algo que ele não dá, consulte o SQLite em
-`<data-dir>/garimpo.db` com uma query agregada — nunca um `SELECT *`.
+`<data-dir>/olx-deals.db` com uma query agregada — nunca um `SELECT *`.
 
 Ao relatar, cite o funil. "5 de 57 passaram, 43 caíram por título sem 's22'" diz
 ao usuário se o filtro está trabalhando ou comendo o corpus inteiro.
@@ -332,7 +332,7 @@ produto não existe desconto, e um "achado" sobre 3 anúncios é ruído.
 Se a prioridade é nunca ser bloqueado, mesmo custando horas:
 
 ```bash
-garimpo hunt --profile /tmp/perfil.json --gentle
+olx-deals hunt --profile /tmp/perfil.json --gentle
 ```
 
 `--gentle` é ~2 rpm, uma página por vez, 8s de jitter, pausa de 5 min a cada 60
@@ -356,7 +356,7 @@ Outras alavancas, em ordem de efeito:
 - **Rode de madrugada.** `--window 02:00-07:00` só trabalha nessas horas (aceita
   virar a meia-noite). Site sob carga policia tráfego mais do que site vazio, e
   uma varredura noturna é mais barata para os dois lados.
-- **Veja o custo antes de gastar.** `garimpo plan` imprime a estimativa de
+- **Veja o custo antes de gastar.** `olx-deals plan` imprime a estimativa de
   requisições e de tempo. Mostre ao usuário antes de autorizar coleta grande.
 
 **Nunca:** trocar de IP/proxy, randomizar fingerprint, resolver captcha. Isso é
@@ -365,11 +365,11 @@ bloqueio de verdade. Se a OLX disser não, a resposta é voltar depois.
 
 ## Quando bloquear
 
-Um 403 não é falha do código. O `garimpo` desacelera, para depois de bloqueios
+Um 403 não é falha do código. O `olx-deals` desacelera, para depois de bloqueios
 consecutivos e salva tudo. Diga ao usuário o que foi coletado e retome depois:
 
 ```bash
-garimpo enrich --profile /tmp/perfil.json --run <id> --rpm 3
+olx-deals enrich --profile /tmp/perfil.json --run <id> --rpm 3
 ```
 
 O resume é por fatia e por página: uma fatia bloqueada na página 40 de 100 volta
@@ -393,7 +393,7 @@ com navegador.
 
 ## Referência de flags
 
-Rode `garimpo --help`. As que mais importam:
+Rode `olx-deals --help`. As que mais importam:
 
 | Flag | Para quê |
 |---|---|
@@ -423,8 +423,8 @@ Rode `garimpo --help`. As que mais importam:
 Comandos que não gastam requisição nenhuma:
 
 ```bash
-garimpo candidates --run <id> --min-match 70 --top 20 [--json]
-garimpo insights   --run <id> [--json]
+olx-deals candidates --run <id> --min-match 70 --top 20 [--json]
+olx-deals insights   --run <id> [--json]
 ```
 
 

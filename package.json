@@ -1,11 +1,11 @@
 {
-  "name": "garimpo-olx",
+  "name": "olx-deals",
   "version": "1.0.11",
   "private": true,
   "type": "module",
   "main": "dist/cli/index.js",
   "bin": {
-    "garimpo": "dist/cli/index.js"
+    "olx-deals": "dist/cli/index.js"
   },
   "files": [
     "dist/**/*",
@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "garimpo": "node dist/cli/index.js",
+    "olx-deals": "node dist/cli/index.js",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest --run",
     "test:watch": "vitest --watch",

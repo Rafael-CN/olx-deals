@@ -23,7 +23,7 @@ describe('Store', () => {
   let store: Store;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'garimpo-'));
+    dir = mkdtempSync(join(tmpdir(), 'olx-deals-'));
     store = new Store(dir);
     store.startRun('run-1', profile, '2026-08-26T00:00:00Z', profileHash(profile));
   });

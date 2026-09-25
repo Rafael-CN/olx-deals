@@ -37,9 +37,9 @@ import { CliValues, buildProfile, parseCommandLine, profileTemplate } from './op
 import { profileDiff, profileHash } from '../config/identity.js';
 
 const HELP = `
-garimpo — bulk collection and triage of olx.com.br classified ads
+olx-deals — bulk collection and triage of olx.com.br classified ads
 
-Usage: garimpo <command> [options]
+Usage: olx-deals <command> [options]
 
 Commands
   hunt        plan, collect, triage, enrich, re-triage and rank in one pass
@@ -99,7 +99,7 @@ Budget and pacing
 Output
   --run <id>                act on a specific run (default: the latest)
   --top 20, --json, --quiet
-  --data-dir .garimpo, --channel chrome, --headed, --no-block-assets
+  --data-dir .olx-deals, --channel chrome, --headed, --no-block-assets
 `;
 
 const EOL = String.fromCharCode(10);
@@ -418,7 +418,7 @@ const main = async (): Promise<number> => {
   // Commands that only read the store must not need a query: `report` and `runs`
   // are how you look at a finished sweep, and demanding a search term to do that
   // would be nonsense.
-  const dataDir = values['data-dir'] ? String(values['data-dir']) : '.garimpo';
+  const dataDir = values['data-dir'] ? String(values['data-dir']) : '.olx-deals';
   const readOnly = command === 'runs' || command === 'report' || command === 'candidates';
   const profile = readOnly ? undefined : buildProfile(values);
   const store = new Store(profile?.dataDir ?? dataDir);
@@ -615,9 +615,9 @@ What ${id} learned`);
           log('');
           log('Sampling under one profile and judging under another is how a run comes to');
           log('mean two things at once. Either resume it as it was, or say so explicitly:');
-          log(`  garimpo ${command} --run ${existing}                 (drop the changed flags)`);
-          log(`  garimpo ${command} --run ${existing} --amend-profile (re-point the run)`);
-          log(`  garimpo ${command} ...                               (start a fresh run)`);
+          log(`  olx-deals ${command} --run ${existing}                 (drop the changed flags)`);
+          log(`  olx-deals ${command} --run ${existing} --amend-profile (re-point the run)`);
+          log(`  olx-deals ${command} ...                               (start a fresh run)`);
           return 4;
         }
       }

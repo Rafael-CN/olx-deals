@@ -64,11 +64,11 @@ Disallow: /conta/
 User-agent: *
 Disallow: /
 
-User-agent: garimpo
+User-agent: olx-deals
 Disallow: /conta/
     `;
 
-    expect(parseRobots(text, 'garimpo').rules).toEqual([{ allow: false, pattern: '/conta/' }]);
+    expect(parseRobots(text, 'olx-deals').rules).toEqual([{ allow: false, pattern: '/conta/' }]);
     expect(parseRobots(text).rules).toEqual([{ allow: false, pattern: '/' }]);
   });
 

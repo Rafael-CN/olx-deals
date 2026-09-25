@@ -1,4 +1,4 @@
-# garimpo-olx — where to take it next
+# olx-deals — where to take it next
 
 A study of the tool's future, written from six specialist research passes, an adversarial
 review of each, and a verification pass against `feat/olx-brasil` at commit time. Every
@@ -217,7 +217,7 @@ otherwise.
 **What.** `startRun` is `ON CONFLICT(id) DO UPDATE SET status = 'running'`
 (`src/store/db.ts:169-175`) — `profile_json` is never replaced. `enrich` runs card triage
 against the freshly-built CLI profile while `triage`/`gems` deliberately re-read the stored one
-as authoritative, so `garimpo enrich --profile v2.json --run <id>` samples under v2 and judges
+as authoritative, so `olx-deals enrich --profile v2.json --run <id>` samples under v2 and judges
 under v1. Fix: compute a canonical hash (sorted-key JSON, sha256) over the *decision-bearing*
 fields only — `query`, `queries`, `demote`, `states`, `categories`, price bounds, `stages`,
 `gems` — store it on `runs`, and have any phase carrying `--run` compare and refuse with a
@@ -268,9 +268,9 @@ for the IDF direction, which belongs in #8 and **not** in the collection path
 ### 6. A label + eval loop, before any further matcher work
 
 **What.** A `labels(ad_id, product_key, relevant, note, labelled_at)` table and two
-zero-request commands: `garimpo label --run <id> --n 200` (stratified draw across the match
+zero-request commands: `olx-deals label --run <id> --n 200` (stratified draw across the match
 bands the histogram at `src/store/db.ts:549-562` already defines, y/n/skip) and
-`garimpo eval --run <id>`, reporting precision@k for k ∈ {20, 50, 100} and — the number that
+`olx-deals eval --run <id>`, reporting precision@k for k ∈ {20, 50, 100} and — the number that
 decides things here — how many labelled-relevant ads would and would not have been enriched
 under each scorer variant given `maxDetails`. Register scorers behind `--scorer current|token|idf`.
 
@@ -317,9 +317,9 @@ for the human, not as score.
 [Knight (2002), *Listing Price, Time on Market, and Ultimate Selling Price*](https://onlinelibrary.wiley.com/doi/abs/10.1111/1540-6229.00038)
 (38.4% of listings revised at least once; revisers are the high-initial-markup sellers)
 
-### 8. `garimpo rescore` — the zero-request feedback loop
+### 8. `olx-deals rescore` — the zero-request feedback loop
 
-**What.** `garimpo rescore --run <id> [--demote 'a,b'] [--min-match N] [--dry-run]`, contacting
+**What.** `olx-deals rescore --run <id> [--demote 'a,b'] [--min-match N] [--dry-run]`, contacting
 no site: read `ads.title` for the run, call `scoreBestMatch`, `UPDATE run_ads SET match_score,
 match_json`, and print the band histogram before and after plus how many ads cross
 `minMatchScore` in each direction. Have `insights` print the exact command rather than the flag
@@ -373,8 +373,8 @@ what already exists: cross-seller photo cluster, relist count, price under the p
 floor while `Condição` says Novo/Lacrado (a direct internal contradiction), zero or one photo,
 very short description. Persist to a `risk` table, print risk **beside** the gem verdict, and
 add `riskVeto: 'none'|'high'` to `GemConfigSchema` defaulting to `'none'`. Pair it with
-`garimpo label <adId> <outcome>` writing an `outcomes` table
-(`contacted|no-reply|met|bought|vanished|scam-attempt`), and `garimpo insights --risk`
+`olx-deals label <adId> <outcome>` writing an `outcomes` table
+(`contacted|no-reply|met|bought|vanished|scam-attempt`), and `olx-deals insights --risk`
 reporting raw flag hit counts against labelled outcomes.
 
 **Why.** "Will I get a bargain" and "will I get the item" are different questions with different
@@ -406,7 +406,7 @@ used-goods seller ratings
 
 **What.** Three concrete things. (a) `SellerInfo.phone` is persisted verbatim inside
 `ad_details.seller_json` — a direct personal identifier held on disk indefinitely. Drop it at
-parse time unless a configured gate needs it. (b) Add `garimpo forget --older-than 180d` and
+parse time unless a configured gate needs it. (b) Add `olx-deals forget --older-than 180d` and
 `--sellers`, purging seller fields and any behavioural tables. (c) Put the position in
 `README.md`, which today contains no LGPD text at all: Art. 4º I exempts processing by a
 natural person for exclusively private and non-economic purposes, and that exemption is what
@@ -439,7 +439,7 @@ measured claim and a plausible one.
 
 | Measurement | Cost | Gates |
 |---|---|---|
-| Does `garimpo gems` ever meet a zero-MAD cohort? `SELECT price, COUNT(*) FROM ads GROUP BY price ORDER BY 2 DESC` | zero requests | the entire MAD-escalation proposal — if it never happens, that work is a no-op |
+| Does `olx-deals gems` ever meet a zero-MAD cohort? `SELECT price, COUNT(*) FROM ads GROUP BY price ORDER BY 2 DESC` | zero requests | the entire MAD-escalation proposal — if it never happens, that work is a no-op |
 | Interstate price spread: median and n per UF over the enriched corpus, as an `insights` block | zero requests | whether geography needs to be in valuation at all, and whether that is one more `COHORT_LEVELS` rung or a regression |
 | Enriched-sample cohort median vs card-corpus median restricted to high-match ads, per cohort | zero requests | whether the price-ordered enrichment sample actually biases the reference, and in which direction |
 | Contact base rate: run a phone/e-mail/handle extractor over `ad_details.description` | zero requests | whether off-platform steering is a signal or a near-universal habit |
@@ -656,7 +656,7 @@ otherwise.
   the accessories and neighbouring models, landing near 10% and tripping both proposed
   thresholds. It is a fuzziness meter. Compute retention over ads scoring ≥ `minMatchScore`
   instead, after a collect, at zero requests.
-- **Refusing a bare `garimpo report` when more than one run started in 24h.** The tool's own
+- **Refusing a bare `olx-deals report` when more than one run started in 24h.** The tool's own
   rule mandates one target per run, so two runs in a day is correct usage, not ambiguity.
   `report` is read-only and free; print the run chosen and the alternatives instead.
 

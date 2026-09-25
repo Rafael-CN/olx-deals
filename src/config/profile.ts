@@ -467,7 +467,7 @@ export const ProfileSchema = z.object({
   stages: z.array(StageSchema).default([]),
   gems: GemConfigSchema.default({}),
   /** Where the SQLite file and the browser state live. */
-  dataDir: z.string().default('.garimpo'),
+  dataDir: z.string().default('.olx-deals'),
 });
 
 export type Profile = z.infer<typeof ProfileSchema>;

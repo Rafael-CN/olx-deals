@@ -133,7 +133,7 @@ export const buildProfile = (values: CliValues): Profile => {
   const base: Profile = values.profile
     ? parseProfile(JSON.parse(readFileSync(String(values.profile), 'utf8')))
     : gemHuntPreset({
-        name: String(values.name ?? values.query ?? 'garimpo'),
+        name: String(values.name ?? values.query ?? 'olx-deals'),
         query: String(values.query ?? ''),
         require: list(values, 'require') ?? [],
         reject: list(values, 'reject') ?? [],
