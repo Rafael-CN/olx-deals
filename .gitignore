@@ -94,3 +94,6 @@ CLAUDE.md
 *.db
 *.db-wal
 *.db-shm
+
+# local Claude Code settings
+.claude/settings.local.json

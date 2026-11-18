@@ -375,6 +375,12 @@ npm run ci     # lint, typecheck, tests, build
 Parsing, sharding, pacing, triage and gem scoring are pure and tested without a
 browser, against page text captured from real ads. Only the scrapers need Chromium.
 
+## Credits
+
+Started as a fork of [olx-mcp](https://github.com/l-margiela/olx-mcp) by Łukasz Margiela,
+an MCP server for the European OLX sites. This project rebuilt it for olx.com.br as a
+CLI with bulk collection, triage and gem scoring.
+
 ## License
 
 MIT — see LICENSE.
